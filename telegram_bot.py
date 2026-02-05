@@ -5,26 +5,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-import requests
-import urllib3
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
+from xui_api import XUIApi, vless_link
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-BASE_URL = os.getenv("XUI_BASE_URL", "")
-USERNAME = os.getenv("XUI_USERNAME", "")
-PASSWORD = os.getenv("XUI_PASSWORD", "")
-SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
 MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
@@ -33,36 +19,32 @@ MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
 MAX_LINKS_PER_MESSAGE = 10
 
 
-def menu(is_admin: bool) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("💰 Balance", callback_data="ui:balance")],
-        [InlineKeyboardButton("🛒 Create Single Client (Wizard)", callback_data="ui:wizard_single")],
-        [InlineKeyboardButton("📦 Create Bulk Clients (Wizard)", callback_data="ui:wizard_bulk")],
-        [InlineKeyboardButton("📍 Set Default Inbound", callback_data="ui:set_inbound")],
-        [InlineKeyboardButton("🧮 Price", callback_data="ui:price")],
-        [InlineKeyboardButton("🎟 Apply Promo", callback_data="ui:promo")],
-    ]
-    if is_admin:
-        rows.append([InlineKeyboardButton("🛠 Create Inbound (Admin)", callback_data="ui:admin_inbound")])
-    return InlineKeyboardMarkup(rows)
-
-
 @dataclass
 class Plan:
     days: int
     gb: int
 
-    @property
-    def expiry_ms(self) -> int:
-        return int((time.time() + self.days * 86400) * 1000)
 
-    @property
-    def total_bytes(self) -> int:
-        return self.gb * 1024 ** 3
+def as_int(v: str) -> Optional[int]:
+    try:
+        return int(v)
+    except ValueError:
+        return None
 
-    @property
-    def price(self) -> float:
-        return round(self.gb * db.get_setting_float("price_per_gb") + self.days * db.get_setting_float("price_per_day"), 2)
+
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_TELEGRAM_ID
+
+
+def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["flow"] = None
+    context.user_data["wizard"] = {}
+
+
+def required_missing() -> str:
+    required = ["TELEGRAM_BOT_TOKEN", "XUI_BASE_URL", "XUI_USERNAME", "XUI_PASSWORD", "XUI_SERVER_HOST"]
+    missing = [k for k in required if not os.getenv(k)]
+    return ", ".join(missing)
 
 
 def expiry_value(days: int, start_after_first_use: bool) -> int:
@@ -71,99 +53,48 @@ def expiry_value(days: int, start_after_first_use: bool) -> int:
     return int((time.time() + days * 86400) * 1000)
 
 
-class XUI:
-    def __init__(self):
-        self.s = requests.Session()
-        self.s.verify = False
-
-    def login(self):
-        r = self.s.post(f"{BASE_URL}/login", data={"username": USERNAME, "password": PASSWORD}, timeout=20)
-        if r.status_code != 200:
-            raise RuntimeError("x-ui login failed")
-
-    def get_inbound(self, inbound_id: int):
-        r = self.s.get(f"{BASE_URL}/panel/api/inbounds/get/{inbound_id}", timeout=20)
-        data = r.json()
-        if not data.get("success"):
-            raise RuntimeError("Failed to fetch inbound")
-        obj = data["obj"]
-        stream = json.loads(obj.get("streamSettings", "{}"))
-        return {
-            "port": obj["port"],
-            "network": stream.get("network", "tcp"),
-            "security": stream.get("security", "none"),
-            "reality": stream.get("realitySettings", {}),
-        }
-
-    def add_clients(self, inbound_id: int, clients: List[dict]):
-        payload = {"id": inbound_id, "settings": json.dumps({"clients": clients})}
-        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/addClient", data=payload, timeout=30)
-        if not r.json().get("success"):
-            raise RuntimeError(f"Client creation failed: {r.text}")
-
-    def create_inbound(self, port: int, remark: str, protocol: str = "vless", network: str = "tcp"):
-        payload = {
-            "up": 0,
-            "down": 0,
-            "total": 0,
-            "remark": remark,
-            "enable": True,
-            "expiryTime": 0,
-            "trafficReset": "never",
-            "lastTrafficResetTime": 0,
-            "listen": "",
-            "port": port,
-            "protocol": protocol,
-            "settings": json.dumps({"clients": [], "decryption": "none", "encryption": "none"}),
-            "streamSettings": json.dumps({"network": network, "security": "none"}),
-            "sniffing": json.dumps({"enabled": False, "destOverride": ["http", "tls"]}),
-        }
-        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/add", data=payload, timeout=30)
-        data = r.json()
-        if not data.get("success"):
-            raise RuntimeError(f"Failed to create inbound: {r.text}")
-        return data.get("obj", {}).get("id")
+def main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard")],
+            [InlineKeyboardButton("👤 My Clients", callback_data="menu:my_clients")],
+            [InlineKeyboardButton("➕ Create Client", callback_data="menu:create_client")],
+            [InlineKeyboardButton("🌐 Inbounds List", callback_data="menu:inbounds")],
+            [InlineKeyboardButton("💰 Wallet / Balance", callback_data="menu:wallet")],
+            [InlineKeyboardButton("📄 Transactions History", callback_data="menu:tx")],
+            [InlineKeyboardButton("🆘 Support", callback_data="menu:support")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings")],
+        ]
+    )
 
 
-def vless_link(uid: str, inbound: dict, remark: str) -> str:
-    if inbound["security"] == "reality":
-        r = inbound["reality"]
-        return (
-            f"vless://{uid}@{SERVER_HOST}:{inbound['port']}?type=tcp&security=reality&encryption=none"
-            f"&pbk={r['settings']['publicKey']}&fp={r['settings'].get('fingerprint', 'chrome')}"
-            f"&sni={r['serverNames'][0]}&sid={r['shortIds'][0]}#{remark}"
+def create_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🛒 Single Client", callback_data="create:single")],
+            [InlineKeyboardButton("📦 Bulk Clients", callback_data="create:bulk")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="menu:home")],
+        ]
+    )
+
+
+def settings_menu(admin: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("📍 Set Default Inbound", callback_data="settings:set_default_inbound")],
+        [InlineKeyboardButton("🎟 Apply Promo Code", callback_data="settings:promo")],
+    ]
+    if admin:
+        rows.extend(
+            [
+                [InlineKeyboardButton("🛠 Admin: Create Inbound", callback_data="admin:create_inbound")],
+                [InlineKeyboardButton("💵 Admin: Set Global Pricing", callback_data="admin:set_global_price")],
+                [InlineKeyboardButton("🌐 Admin: Set Inbound Rule", callback_data="admin:set_inbound_rule")],
+                [InlineKeyboardButton("👥 Admin: Resellers", callback_data="admin:resellers")],
+                [InlineKeyboardButton("💳 Admin: Charge Wallet", callback_data="admin:charge_wallet")],
+            ]
         )
-    return f"vless://{uid}@{SERVER_HOST}:{inbound['port']}?type={inbound['network']}&security={inbound['security']}&encryption=none#{remark}"
-
-
-def as_int(text: str) -> Optional[int]:
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
-def required_missing() -> str:
-    missing = []
-    for key, val in {
-        "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
-        "XUI_BASE_URL": BASE_URL,
-        "XUI_USERNAME": USERNAME,
-        "XUI_PASSWORD": PASSWORD,
-        "XUI_SERVER_HOST": SERVER_HOST,
-    }.items():
-        if not val:
-            missing.append(key)
-    return ", ".join(missing)
-
-
-def is_admin(uid: int) -> bool:
-    return uid == ADMIN_TELEGRAM_ID
-
-
-def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["flow"] = None
-    context.user_data["wizard"] = {}
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def send_links(update: Update, links: List[str]) -> None:
@@ -171,58 +102,503 @@ async def send_links(update: Update, links: List[str]) -> None:
         await update.message.reply_text("\n".join(links[i:i + MAX_LINKS_PER_MESSAGE]))
 
 
-def wizard_summary(wiz: Dict, gross: float, discount: float, net: float) -> str:
+def inbound_price(inbound_id: int, days: int, gb: int) -> float:
+    rule = db.inbound_rule(inbound_id)
+    if rule and int(rule["enabled"]) == 0:
+        raise ValueError("Selected inbound is disabled by admin")
+    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else db.get_setting_float("price_per_gb")
+    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else db.get_setting_float("price_per_day")
+    return round(gb * ppgb + days * ppday, 2)
+
+
+def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
     return (
-        "🧾 Please confirm your order:\n"
-        f"Type: {wiz['kind']}\n"
-        f"Inbound: {wiz['inbound']}\n"
-        f"Remark: {wiz.get('remark', '-') if wiz['kind'] == 'single' else wiz.get('base', '-')}\n"
-        f"Days: {wiz['days']}\n"
-        f"Traffic: {wiz['gb']} GB\n"
-        f"Start after first use: {'Yes' if wiz['start_after_first_use'] else 'No'}\n"
-        f"Count: {wiz.get('count', 1)}\n"
-        f"Gross: {gross}\n"
-        f"Discount: {discount}%\n"
-        f"Final charge: {net}\n\n"
-        "Send: yes / no"
+        "🧾 Confirm order\n"
+        f"Type: {w['kind']}\nInbound: {w['inbound_id']}\n"
+        f"Remark/Base: {w.get('remark') or w.get('base_remark')}\n"
+        f"Days: {w['days']}\nGB: {w['gb']}\n"
+        f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
+        f"Count: {w.get('count', 1)}\n"
+        f"Gross: {gross}\nDiscount: {discount}%\nFinal: {net}\n\n"
+        "Reply with: yes / no"
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.ensure_agent(user.id, user.username or "", user.full_name or "")
+    u = update.effective_user
+    role = "admin" if is_admin(u.id) else "reseller"
+    db.ensure_agent(u.id, u.username or "", u.full_name or "", role=role)
     reset_flow(context)
-    await update.message.reply_text("Welcome. Use buttons for a guided flow.", reply_markup=menu(is_admin(user.id)))
+    await update.message.reply_text("Welcome to Reseller Panel 👋\nUse the menu below.", reply_markup=main_menu())
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ This bot is wizard-first (step-by-step).\n"
-        "Use /start and choose Create Single/Bulk.\n"
-        "Commands: /balance, /topup <amount>, /setinbound <id>, /myinbound, /price <days> <gb>, /promo <CODE>, /cancel, /menu"
-    )
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Main menu", reply_markup=main_menu())
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_flow(context)
-    await update.message.reply_text("Current operation canceled.")
+    await update.message.reply_text("Operation canceled.")
 
 
-async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Main menu:", reply_markup=menu(is_admin(update.effective_user.id)))
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    role = "admin" if is_admin(uid) else "reseller"
+    db.ensure_agent(uid, q.from_user.username or "", q.from_user.full_name or "", role=role)
+
+    data = q.data
+    if data == "menu:home":
+        await q.message.reply_text("Main menu", reply_markup=main_menu())
+        return
+
+    if data == "menu:dashboard":
+        s = db.agent_stats(uid)
+        await q.message.reply_text(
+            f"📊 Dashboard\nBalance: {s['balance']}\nClients: {s['clients']}\nToday sales: {s['today_sales']}\nAll spent: {s['spent']}"
+        )
+        return
+
+    if data == "menu:my_clients":
+        rows = db.list_clients(uid, limit=20)
+        if not rows:
+            await q.message.reply_text("No clients yet.")
+            return
+        lines = ["👤 Your recent clients:"]
+        for c in rows:
+            lines.append(f"• {c['email']} | inbound {c['inbound_id']} | {c['days']}d/{c['gb']}GB")
+        await q.message.reply_text("\n".join(lines[:40]))
+        return
+
+    if data == "menu:create_client":
+        await q.message.reply_text("Choose creation mode:", reply_markup=create_menu())
+        return
+
+    if data == "menu:inbounds":
+        api = XUIApi()
+        try:
+            api.login()
+            ins = api.list_inbounds()
+        except Exception as exc:
+            await q.message.reply_text(f"Panel error: {exc}")
+            return
+        if not ins:
+            await q.message.reply_text("No inbounds found.")
+            return
+        lines = ["🌐 Inbounds:"]
+        for i in ins[:40]:
+            rid = i.get("id")
+            remark = i.get("remark", "-")
+            port = i.get("port", "-")
+            lines.append(f"• ID {rid} | {remark} | port {port}")
+        await q.message.reply_text("\n".join(lines))
+        return
+
+    if data == "menu:wallet":
+        a = db.get_agent(uid)
+        await q.message.reply_text(f"💰 Balance: {a['balance'] if a else 0}")
+        return
+
+    if data == "menu:tx":
+        tx = db.list_transactions(uid, limit=15)
+        if not tx:
+            await q.message.reply_text("No transactions yet.")
+            return
+        lines = ["📄 Last transactions:"]
+        for t in tx:
+            lines.append(f"• {t['amount']} | {t['reason']} | {time.strftime('%Y-%m-%d %H:%M', time.localtime(t['created_at']))}")
+        await q.message.reply_text("\n".join(lines))
+        return
+
+    if data == "menu:support":
+        await q.message.reply_text("🆘 Support\n" + db.get_setting_text("support_text"))
+        return
+
+    if data == "menu:settings":
+        await q.message.reply_text("Settings", reply_markup=settings_menu(is_admin(uid)))
+        return
+
+    if data == "settings:set_default_inbound":
+        context.user_data["flow"] = "set_default_inbound"
+        await q.message.reply_text("Send inbound ID to save as default.")
+        return
+
+    if data == "settings:promo":
+        context.user_data["flow"] = "promo_apply"
+        await q.message.reply_text("Send promo code now.")
+        return
+
+    if data == "create:single":
+        context.user_data["flow"] = "wizard_inbound"
+        context.user_data["wizard"] = {"kind": "single"}
+        await q.message.reply_text(
+            "➕ Single client wizard\nStep 1/6: send inbound ID (or type: default)."
+        )
+        return
+
+    if data == "create:bulk":
+        context.user_data["flow"] = "wizard_inbound"
+        context.user_data["wizard"] = {"kind": "bulk"}
+        await q.message.reply_text(
+            "➕ Bulk client wizard\nStep 1/7: send inbound ID (or type: default)."
+        )
+        return
+
+    if data.startswith("admin:"):
+        if not is_admin(uid):
+            await q.message.reply_text("Only admin can use this option.")
+            return
+        if data == "admin:create_inbound":
+            context.user_data["flow"] = "admin_create_inbound"
+            await q.message.reply_text("Send: <port> <remark> [protocol] [network]")
+        elif data == "admin:set_global_price":
+            context.user_data["flow"] = "admin_set_global_price"
+            await q.message.reply_text("Send: <price_per_gb> <price_per_day>\nExample: 0.2 0.1")
+        elif data == "admin:set_inbound_rule":
+            context.user_data["flow"] = "admin_set_inbound_rule"
+            await q.message.reply_text("Send: <inbound_id> <enabled 1/0> <price_per_gb or -> <price_per_day or ->")
+        elif data == "admin:resellers":
+            rows = db.list_resellers(limit=50)
+            if not rows:
+                await q.message.reply_text("No resellers.")
+            else:
+                txt = ["👥 Resellers:"]
+                for r in rows:
+                    txt.append(f"• {r['tg_id']} | {r['username'] or '-'} | bal={r['balance']} | active={r['is_active']}")
+                await q.message.reply_text("\n".join(txt[:60]))
+        elif data == "admin:charge_wallet":
+            context.user_data["flow"] = "admin_charge_wallet"
+            await q.message.reply_text("Send: <tg_id> <amount>\nExample: 123456 50")
+        return
+
+    await q.message.reply_text("Unknown action.")
 
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.ensure_agent(user.id, user.username or "", user.full_name or "")
-    agent = db.get_agent(user.id)
-    stats = db.agent_stats(user.id)
+async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+    uid = update.effective_user.id
+    agent = db.get_agent(uid)
+    flow = context.user_data.get("flow")
+    w = context.user_data.get("wizard", {})
+
+    if flow == "set_default_inbound":
+        iid = as_int(txt)
+        if not iid or iid <= 0:
+            await update.message.reply_text("Invalid inbound ID")
+            return
+        db.set_preferred_inbound(uid, iid)
+        reset_flow(context)
+        await update.message.reply_text(f"Default inbound set to {iid}")
+        return
+
+    if flow == "promo_apply":
+        try:
+            disc = db.apply_promo(txt, uid)
+        except ValueError as exc:
+            await update.message.reply_text(str(exc))
+            return
+        context.user_data["promo_discount"] = disc
+        reset_flow(context)
+        await update.message.reply_text(f"Promo applied: {disc}% on your next order")
+        return
+
+    # Admin flows
+    if flow == "admin_create_inbound":
+        if not is_admin(uid):
+            await update.message.reply_text("Not allowed")
+            return
+        parts = txt.split()
+        if len(parts) < 2:
+            await update.message.reply_text("Usage: <port> <remark> [protocol] [network]")
+            return
+        port = as_int(parts[0])
+        if not port:
+            await update.message.reply_text("Invalid port")
+            return
+        api = XUIApi()
+        try:
+            api.login()
+            inbound_id = api.create_inbound(port, parts[1], parts[2] if len(parts) > 2 else "vless", parts[3] if len(parts) > 3 else "tcp")
+        except Exception as exc:
+            await update.message.reply_text(f"Failed: {exc}")
+            return
+        reset_flow(context)
+        await update.message.reply_text(f"Inbound created with ID: {inbound_id}")
+        return
+
+    if flow == "admin_set_global_price":
+        if not is_admin(uid):
+            await update.message.reply_text("Not allowed")
+            return
+        parts = txt.split()
+        if len(parts) != 2:
+            await update.message.reply_text("Usage: <price_per_gb> <price_per_day>")
+            return
+        try:
+            pgb = float(parts[0]); pday = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("Prices must be numeric")
+            return
+        db.set_setting("price_per_gb", str(pgb))
+        db.set_setting("price_per_day", str(pday))
+        reset_flow(context)
+        await update.message.reply_text("Global pricing updated.")
+        return
+
+    if flow == "admin_set_inbound_rule":
+        if not is_admin(uid):
+            await update.message.reply_text("Not allowed")
+            return
+        parts = txt.split()
+        if len(parts) != 4:
+            await update.message.reply_text("Usage: <inbound_id> <enabled 1/0> <price_per_gb or -> <price_per_day or ->")
+            return
+        iid = as_int(parts[0]); en = as_int(parts[1])
+        if not iid or en not in [0, 1]:
+            await update.message.reply_text("Invalid inbound_id/enabled")
+            return
+        pgb = None if parts[2] == "-" else float(parts[2])
+        pday = None if parts[3] == "-" else float(parts[3])
+        db.set_inbound_rule(iid, bool(en), pgb, pday)
+        reset_flow(context)
+        await update.message.reply_text("Inbound pricing/enable rule saved.")
+        return
+
+    if flow == "admin_charge_wallet":
+        if not is_admin(uid):
+            await update.message.reply_text("Not allowed")
+            return
+        parts = txt.split()
+        if len(parts) != 2:
+            await update.message.reply_text("Usage: <tg_id> <amount>")
+            return
+        tid = as_int(parts[0])
+        try:
+            amount = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("Amount must be numeric")
+            return
+        if not tid:
+            await update.message.reply_text("Invalid tg_id")
+            return
+        db.ensure_agent(tid, "", "", role="reseller")
+        bal = db.add_balance(tid, amount, "topup.admin", meta=f"by:{uid}")
+        reset_flow(context)
+        await update.message.reply_text(f"Wallet updated. New balance: {bal}")
+        return
+
+    # Wizard flows
+    if flow == "wizard_inbound":
+        if txt.lower() == "default":
+            if not agent or not agent["preferred_inbound"]:
+                await update.message.reply_text("No default inbound set. Send numeric inbound ID.")
+                return
+            w["inbound_id"] = int(agent["preferred_inbound"])
+        else:
+            iid = as_int(txt)
+            if not iid or iid <= 0:
+                await update.message.reply_text("Invalid inbound ID")
+                return
+            w["inbound_id"] = iid
+        context.user_data["wizard"] = w
+        if w["kind"] == "single":
+            context.user_data["flow"] = "wizard_remark"
+            await update.message.reply_text("Step 2/6: send client remark/email. Hint: user123")
+        else:
+            context.user_data["flow"] = "wizard_base"
+            await update.message.reply_text("Step 2/7: send base remark for bulk. Hint: teamA")
+        return
+
+    if flow == "wizard_remark":
+        if len(txt) < 2:
+            await update.message.reply_text("Remark too short")
+            return
+        w["remark"] = txt
+        context.user_data["flow"] = "wizard_days"
+        await update.message.reply_text("Step 3/6: send total days. Hint: 30")
+        return
+
+    if flow == "wizard_base":
+        if len(txt) < 2:
+            await update.message.reply_text("Base remark too short")
+            return
+        w["base_remark"] = txt
+        context.user_data["flow"] = "wizard_count"
+        await update.message.reply_text("Step 3/7: send number of clients. Hint: 5")
+        return
+
+    if flow == "wizard_count":
+        c = as_int(txt)
+        if not c or c <= 0 or c > MAX_BULK_COUNT:
+            await update.message.reply_text(f"Invalid count. max={MAX_BULK_COUNT}")
+            return
+        w["count"] = c
+        context.user_data["flow"] = "wizard_days"
+        await update.message.reply_text("Step 4/7: send total days. Hint: 30")
+        return
+
+    if flow == "wizard_days":
+        d = as_int(txt)
+        if not d or d <= 0 or d > MAX_DAYS:
+            await update.message.reply_text(f"Invalid days. max={MAX_DAYS}")
+            return
+        w["days"] = d
+        context.user_data["flow"] = "wizard_gb"
+        step = "Step 4/6" if w["kind"] == "single" else "Step 5/7"
+        await update.message.reply_text(f"{step}: send total GB. Hint: 50")
+        return
+
+    if flow == "wizard_gb":
+        g = as_int(txt)
+        if not g or g <= 0 or g > MAX_GB:
+            await update.message.reply_text(f"Invalid GB. max={MAX_GB}")
+            return
+        w["gb"] = g
+        context.user_data["flow"] = "wizard_start_after_first_use"
+        step = "Step 5/6" if w["kind"] == "single" else "Step 6/7"
+        await update.message.reply_text(f"{step}: start after first use? (y/n)")
+        return
+
+    if flow == "wizard_start_after_first_use":
+        v = txt.lower()
+        if v not in ["y", "n", "yes", "no"]:
+            await update.message.reply_text("Please answer y or n")
+            return
+        w["start_after_first_use"] = v in ["y", "yes"]
+
+        try:
+            unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
+        except ValueError as exc:
+            reset_flow(context)
+            await update.message.reply_text(str(exc))
+            return
+
+        count = 1 if w["kind"] == "single" else w["count"]
+        gross = round(unit * count, 2)
+        discount = float(context.user_data.get("promo_discount", 0.0))
+        net = round(gross * (1 - discount / 100), 2)
+        context.user_data["flow"] = "wizard_confirm"
+        await update.message.reply_text(wizard_summary(w, gross, discount, net))
+        return
+
+    if flow == "wizard_confirm":
+        v = txt.lower()
+        if v in ["n", "no"]:
+            reset_flow(context)
+            context.user_data.pop("promo_discount", None)
+            await update.message.reply_text("Order canceled.")
+            return
+        if v not in ["y", "yes"]:
+            await update.message.reply_text("Please answer yes or no")
+            return
+        await finalize_order(update, context, w)
+        return
+
+    await update.message.reply_text("Use /start and choose from menu buttons.")
+
+
+async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: Dict):
+    uid = update.effective_user.id
+    count = 1 if w["kind"] == "single" else w["count"]
+    unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
+    gross = round(unit * count, 2)
+    disc = float(context.user_data.pop("promo_discount", 0.0))
+    net = round(gross * (1 - disc / 100), 2)
+
+    ag = db.get_agent(uid)
+    if not ag or int(ag["is_active"]) != 1:
+        reset_flow(context)
+        await update.message.reply_text("Your reseller account is disabled. Contact admin.")
+        return
+
+    try:
+        db.deduct_balance(uid, net, "order.charge", json.dumps({"kind": w["kind"], "inbound": w["inbound_id"]}))
+    except ValueError:
+        reset_flow(context)
+        await update.message.reply_text(f"Insufficient balance. Required: {net}")
+        return
+
+    api = XUIApi()
+    links: List[str] = []
+    expiry = expiry_value(w["days"], w["start_after_first_use"])
+
+    try:
+        api.login()
+        inbound = api.get_inbound(w["inbound_id"])
+        clients = []
+
+        if w["kind"] == "single":
+            uidc = str(uuid.uuid4())
+            email = w["remark"]
+            clients.append({
+                "id": uidc,
+                "email": email,
+                "enable": True,
+                "expiryTime": expiry,
+                "totalGB": int(w["gb"]) * 1024**3,
+                "flow": "",
+                "limitIp": 0,
+                "tgId": str(uid),
+                "subId": "",
+                "comment": "tg",
+                "reset": 0,
+            })
+            link = vless_link(uidc, inbound, email)
+            links.append(link)
+            db.save_created_client(uid, w["inbound_id"], email, uidc, link, w["days"], w["gb"], w["start_after_first_use"])
+        else:
+            for i in range(w["count"]):
+                uidc = str(uuid.uuid4())
+                email = f"{w['base_remark']}_{i+1}"
+                clients.append({
+                    "id": uidc,
+                    "email": email,
+                    "enable": True,
+                    "expiryTime": expiry,
+                    "totalGB": int(w["gb"]) * 1024**3,
+                    "flow": "",
+                    "limitIp": 0,
+                    "tgId": str(uid),
+                    "subId": "",
+                    "comment": "tg",
+                    "reset": 0,
+                })
+                link = vless_link(uidc, inbound, email)
+                links.append(link)
+                db.save_created_client(uid, w["inbound_id"], email, uidc, link, w["days"], w["gb"], w["start_after_first_use"])
+
+        api.add_clients(w["inbound_id"], clients)
+        db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "success")
+    except Exception as exc:
+        db.add_balance(uid, net, "order.refund", str(exc))
+        db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
+        reset_flow(context)
+        await update.message.reply_text(f"Panel/API error. Refunded. Details: {exc}")
+        return
+
+    bal = db.get_agent(uid)["balance"]
     await update.message.reply_text(
-        f"Balance: {agent['balance']}\n"
-        f"Default inbound: {agent['preferred_inbound'] or 'not set'}\n"
-        f"All-time topup: {stats['lifetime_topup']}\n"
-        f"Clients created: {stats['clients']}\n"
-        f"Total spent: {stats['spent']}"
+        f"✅ Client(s) created\nType: {w['kind']}\nInbound: {w['inbound_id']}\n"
+        f"Days: {w['days']} | GB: {w['gb']} | Count: {count}\n"
+        f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
+        f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
+    )
+    await send_links(update, links)
+
+    # QR preview for single client
+    if len(links) == 1:
+        qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={links[0]}"
+        await update.message.reply_photo(qr)
+
+    reset_flow(context)
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "This is a button-first reseller panel.\n"
+        "Use /start to open menu.\n"
+        "Useful commands: /start, /menu, /cancel, /topup <amount>"
     )
 
 
@@ -242,323 +618,6 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Top-up ok. Balance: {bal}")
 
 
-async def set_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("Usage: /setinbound <id>")
-        return
-    inbound = as_int(context.args[0])
-    if inbound is None or inbound <= 0:
-        await update.message.reply_text("Invalid inbound ID")
-        return
-    db.set_preferred_inbound(update.effective_user.id, inbound)
-    await update.message.reply_text(f"Default inbound set to {inbound}")
-
-
-async def my_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    a = db.get_agent(update.effective_user.id)
-    await update.message.reply_text(f"Default inbound: {a['preferred_inbound'] if a else 'not set'}")
-
-
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /price <days> <gb>")
-        return
-    d, g = as_int(context.args[0]), as_int(context.args[1])
-    if not d or not g or d <= 0 or g <= 0:
-        await update.message.reply_text("days and gb must be positive integers")
-        return
-    if d > MAX_DAYS or g > MAX_GB:
-        await update.message.reply_text(f"Limits exceeded. Max days: {MAX_DAYS}, Max GB: {MAX_GB}")
-        return
-    p = Plan(d, g)
-    await update.message.reply_text(f"Price: {p.price}")
-
-
-async def promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("Usage: /promo <CODE>")
-        return
-    try:
-        disc = db.apply_promo(context.args[0], update.effective_user.id)
-    except ValueError as exc:
-        await update.message.reply_text(str(exc))
-        return
-    context.user_data["promo_discount"] = disc
-    await update.message.reply_text(f"Promo applied: {disc}% on next order")
-
-
-async def create_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Only admin can create inbounds")
-        return
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /createinbound <port> <remark> [protocol] [network]")
-        return
-    port = as_int(context.args[0])
-    if not port or port <= 0:
-        await update.message.reply_text("Invalid port")
-        return
-    x = XUI()
-    try:
-        x.login()
-        inbound_id = x.create_inbound(port, context.args[1], context.args[2] if len(context.args) > 2 else "vless", context.args[3] if len(context.args) > 3 else "tcp")
-    except Exception as exc:
-        await update.message.reply_text(f"Failed: {exc}")
-        return
-    await update.message.reply_text(f"Inbound created: {inbound_id}")
-
-
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user = q.from_user
-    db.ensure_agent(user.id, user.username or "", user.full_name or "")
-
-    if q.data == "ui:balance":
-        stats = db.agent_stats(user.id)
-        a = db.get_agent(user.id)
-        await q.message.reply_text(
-            f"Balance: {a['balance']}\nDefault inbound: {a['preferred_inbound'] or 'not set'}\n"
-            f"All-time topup: {stats['lifetime_topup']}\nClients: {stats['clients']}\nSpent: {stats['spent']}"
-        )
-    elif q.data == "ui:set_inbound":
-        context.user_data["flow"] = "set_inbound"
-        await q.message.reply_text("📍 Step 1: Send inbound id to save as default.")
-    elif q.data == "ui:wizard_single":
-        context.user_data["flow"] = "single_inbound"
-        context.user_data["wizard"] = {"kind": "single"}
-        await q.message.reply_text(
-            "🛒 Single Client Wizard\n"
-            "Step 1/6: send inbound id (or type 'default').\n"
-            "Hint: default uses your saved inbound from /setinbound."
-        )
-    elif q.data == "ui:wizard_bulk":
-        context.user_data["flow"] = "bulk_inbound"
-        context.user_data["wizard"] = {"kind": "bulk"}
-        await q.message.reply_text(
-            "📦 Bulk Client Wizard\n"
-            "Step 1/7: send inbound id (or type 'default').\n"
-            "Hint: default uses your saved inbound from /setinbound."
-        )
-    elif q.data == "ui:price":
-        await q.message.reply_text("Use /price <days> <gb>")
-    elif q.data == "ui:promo":
-        await q.message.reply_text("Use /promo <CODE>")
-    elif q.data == "ui:admin_inbound":
-        if is_admin(user.id):
-            await q.message.reply_text("Use /createinbound <port> <remark> [protocol] [network]")
-        else:
-            await q.message.reply_text("Only admin")
-    else:
-        await q.message.reply_text("Unknown action. Use /start to refresh menu.")
-
-
-async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.message.text or "").strip()
-    uid = update.effective_user.id
-    agent = db.get_agent(uid)
-    flow = context.user_data.get("flow")
-    wiz: Dict = context.user_data.get("wizard", {})
-
-    if flow == "set_inbound":
-        inbound = as_int(txt)
-        if not inbound or inbound <= 0:
-            await update.message.reply_text("Invalid inbound id")
-            return
-        db.set_preferred_inbound(uid, inbound)
-        reset_flow(context)
-        await update.message.reply_text(f"✅ Default inbound set to {inbound}")
-        return
-
-    if flow in ["single_inbound", "bulk_inbound"]:
-        if txt.lower() == "default":
-            if not agent or not agent["preferred_inbound"]:
-                await update.message.reply_text("No default inbound. Send a numeric inbound id.")
-                return
-            wiz["inbound"] = int(agent["preferred_inbound"])
-        else:
-            inbound = as_int(txt)
-            if not inbound or inbound <= 0:
-                await update.message.reply_text("Invalid inbound id")
-                return
-            wiz["inbound"] = inbound
-        context.user_data["wizard"] = wiz
-        context.user_data["flow"] = "remark_or_base"
-        if wiz.get("kind") == "single":
-            await update.message.reply_text("Step 2/6: send client remark/email. Hint: example user123")
-        else:
-            await update.message.reply_text("Step 2/7: send base remark. Hint: example agentA")
-        return
-
-    if flow == "remark_or_base":
-        if not txt:
-            await update.message.reply_text("Remark cannot be empty")
-            return
-        if wiz.get("kind") == "single":
-            wiz["remark"] = txt
-            await update.message.reply_text("Step 3/6: send duration in days. Hint: 30")
-        else:
-            wiz["base"] = txt
-            await update.message.reply_text("Step 3/7: send client count. Hint: 5")
-            context.user_data["flow"] = "bulk_count"
-            return
-        context.user_data["flow"] = "common_days"
-        return
-
-    if flow == "bulk_count":
-        count = as_int(txt)
-        if not count or count <= 0:
-            await update.message.reply_text("Invalid count")
-            return
-        if count > MAX_BULK_COUNT:
-            await update.message.reply_text(f"Count is too high. Max allowed: {MAX_BULK_COUNT}")
-            return
-        wiz["count"] = count
-        context.user_data["flow"] = "common_days"
-        await update.message.reply_text("Step 4/7: send duration in days. Hint: 30")
-        return
-
-    if flow == "common_days":
-        days = as_int(txt)
-        if not days or days <= 0:
-            await update.message.reply_text("Invalid days")
-            return
-        if days > MAX_DAYS:
-            await update.message.reply_text(f"Days is too high. Max allowed: {MAX_DAYS}")
-            return
-        wiz["days"] = days
-        context.user_data["flow"] = "common_gb"
-        step_text = "Step 4/6" if wiz.get("kind") == "single" else "Step 5/7"
-        await update.message.reply_text(f"{step_text}: send traffic in GB. Hint: 50")
-        return
-
-    if flow == "common_gb":
-        gb = as_int(txt)
-        if not gb or gb <= 0:
-            await update.message.reply_text("Invalid GB")
-            return
-        if gb > MAX_GB:
-            await update.message.reply_text(f"GB is too high. Max allowed: {MAX_GB}")
-            return
-        wiz["gb"] = gb
-        context.user_data["flow"] = "start_after_first_use"
-        step_text = "Step 5/6" if wiz.get("kind") == "single" else "Step 6/7"
-        await update.message.reply_text(
-            f"{step_text}: Start after first use? (y/n)\n"
-            "Hint: y means validity starts when client first connects."
-        )
-        return
-
-    if flow == "start_after_first_use":
-        v = txt.lower()
-        if v not in ["y", "n", "yes", "no"]:
-            await update.message.reply_text("Please answer with y or n")
-            return
-        wiz["start_after_first_use"] = v in ["y", "yes"]
-
-        plan = Plan(wiz["days"], wiz["gb"])
-        count = 1 if wiz["kind"] == "single" else wiz["count"]
-        gross = round(plan.price * count, 2)
-        discount = float(context.user_data.get("promo_discount", 0.0))
-        net = round(gross * (1 - discount / 100), 2)
-
-        context.user_data["flow"] = "confirm_order"
-        await update.message.reply_text(wizard_summary(wiz, gross, discount, net))
-        return
-
-    if flow == "confirm_order":
-        v = txt.lower()
-        if v in ["no", "n"]:
-            reset_flow(context)
-            context.user_data.pop("promo_discount", None)
-            await update.message.reply_text("Order canceled.")
-            return
-        if v not in ["yes", "y"]:
-            await update.message.reply_text("Please answer with yes or no")
-            return
-        await finalize_order(update, context, wiz)
-        return
-
-    await update.message.reply_text("Use /start and choose a button.")
-
-
-async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, wiz: Dict):
-    uid = update.effective_user.id
-    plan = Plan(wiz["days"], wiz["gb"])
-    count = 1 if wiz["kind"] == "single" else wiz["count"]
-    gross = round(plan.price * count, 2)
-    disc = float(context.user_data.pop("promo_discount", 0.0))
-    net = round(gross * (1 - disc / 100), 2)
-
-    try:
-        db.deduct_balance(uid, net, "order.charge", json.dumps({"kind": wiz["kind"], "gross": gross, "disc": disc}))
-    except ValueError:
-        await update.message.reply_text(f"Insufficient balance. Need {net}")
-        reset_flow(context)
-        return
-
-    x = XUI()
-    links = []
-    try:
-        x.login()
-        inbound = x.get_inbound(wiz["inbound"])
-        clients = []
-        expiry = expiry_value(wiz["days"], wiz["start_after_first_use"])
-
-        if wiz["kind"] == "single":
-            uidc = str(uuid.uuid4())
-            clients.append({
-                "id": uidc,
-                "email": wiz["remark"],
-                "enable": True,
-                "expiryTime": expiry,
-                "totalGB": plan.total_bytes,
-                "flow": "",
-                "limitIp": 0,
-                "tgId": str(uid),
-                "subId": "",
-                "comment": "tg",
-                "reset": 0,
-            })
-            links.append(vless_link(uidc, inbound, wiz["remark"]))
-        else:
-            for i in range(wiz["count"]):
-                uidc = str(uuid.uuid4())
-                remark = f"{wiz['base']}_{i + 1}"
-                clients.append({
-                    "id": uidc,
-                    "email": remark,
-                    "enable": True,
-                    "expiryTime": expiry,
-                    "totalGB": plan.total_bytes,
-                    "flow": "",
-                    "limitIp": 0,
-                    "tgId": str(uid),
-                    "subId": "",
-                    "comment": "tg",
-                    "reset": 0,
-                })
-                links.append(vless_link(uidc, inbound, remark))
-
-        x.add_clients(wiz["inbound"], clients)
-        db.create_order(uid, wiz["inbound"], wiz["kind"], wiz["days"], wiz["gb"], count, gross, disc, net, "success")
-    except Exception as exc:
-        db.add_balance(uid, net, "order.refund", str(exc))
-        db.create_order(uid, wiz["inbound"], wiz["kind"], wiz["days"], wiz["gb"], count, gross, disc, net, "failed")
-        await update.message.reply_text(f"Creation failed, refunded. Error: {exc}")
-        reset_flow(context)
-        return
-
-    bal = db.get_agent(uid)["balance"]
-    await update.message.reply_text(
-        f"Done ✅\nType: {wiz['kind']}\nInbound: {wiz['inbound']}\n"
-        f"Days: {wiz['days']} | GB: {wiz['gb']} | Start after first use: {'Yes' if wiz['start_after_first_use'] else 'No'}\n"
-        f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
-    )
-    await send_links(update, links)
-    reset_flow(context)
-
-
 def main() -> None:
     db.init_db()
     missing = required_missing()
@@ -570,14 +629,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("topup", topup))
-    app.add_handler(CommandHandler("setinbound", set_inbound))
-    app.add_handler(CommandHandler("myinbound", my_inbound))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("promo", promo))
-    app.add_handler(CommandHandler("createinbound", create_inbound))
-    app.add_handler(CallbackQueryHandler(callback_router, pattern=r"^ui:"))
+    app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_flow))
     app.run_polling()
 

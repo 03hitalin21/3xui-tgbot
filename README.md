@@ -1,28 +1,49 @@
 # 3xui-tgbot
 
-Telegram + 3x-ui sales system with:
-- step-by-step agent order flow,
-- SQLite database storage,
-- simple admin web panel.
+Commercial-grade Telegram reseller panel for 3x-ui / Sanaei.
 
-## Key upgrades
-- **Database-backed storage** (`bot.db`): agents, wallet ledger, orders, promos, settings.
-- **Admin web app** (`admin_web.py`):
-  - set price per GB/day,
-  - create promo codes,
-  - view agent performance (balance, lifetime top-up, clients, spent).
-- **Better agent UX** in Telegram:
-  - guided step-by-step wizard (asks one parameter at a time),
-  - no more long single-line command required for creation,
-  - promo code support for discounts.
-- **Role policy**:
-  - admin-only inbound creation (`ADMIN_TELEGRAM_ID`, default `8477244366`),
-  - agents only create clients on existing inbounds.
+## What is implemented
+- Button-first Telegram UX (not command-heavy).
+- FSM-style guided client creation flow.
+- SQLite database for wallets, orders, transactions, clients, promo codes, settings.
+- Admin web panel for pricing/promos/agent performance.
+- Admin/reseller role separation.
+
+## Professional Telegram menu
+- 📊 Dashboard
+- 👤 My Clients
+- ➕ Create Client
+- 🌐 Inbounds List
+- 💰 Wallet / Balance
+- 📄 Transactions History
+- 🆘 Support
+- ⚙️ Settings
+
+## Client creation wizard (step-by-step)
+1. Select inbound (or default)
+2. Enter remark/base remark
+3. Enter count (bulk only)
+4. Enter total days
+5. Enter total GB
+6. Start after first use? (y/n)
+7. Confirm (yes/no)
+
+After creation:
+- configuration links are shown,
+- single creation includes QR preview,
+- order and client are stored in DB.
+
+## Pricing & billing
+- Global price per GB/day.
+- Optional per-inbound pricing rule (and enable/disable inbound).
+- Automatic wallet deduction.
+- Prevent creation on insufficient balance.
+- Clear error messages and refund on panel/API failure.
 
 ## Environment
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
-export XUI_BASE_URL="https://host:port/panelpath"
+export XUI_BASE_URL="https://host:port/panel-path"
 export XUI_USERNAME="admin"
 export XUI_PASSWORD="admin"
 export XUI_SERVER_HOST="host"
@@ -32,38 +53,26 @@ export ADMIN_TELEGRAM_ID="8477244366"
 export BOT_DB_PATH="bot.db"
 export ADMIN_WEB_TOKEN="set-a-secret-token"
 export ADMIN_WEB_PORT="8080"
+export MAX_PLAN_DAYS="365"
+export MAX_PLAN_GB="2000"
+export MAX_BULK_COUNT="100"
 ```
 
-## Run bot
+## Run
 ```bash
 pip install -r requirements.txt
 python telegram_bot.py
 ```
 
-## Run admin web panel
+## Admin web
 ```bash
-pip install -r requirements.txt
 python admin_web.py
 ```
 Open:
 `http://<server-ip>:8080/?token=<ADMIN_WEB_TOKEN>`
 
-## Telegram usage
-1. `/start`
-2. Tap **Create Single Client** or **Create Bulk Clients**
-3. Bot asks parameters one by one with hints:
-   - inbound id (or `default`)
-   - remark/base remark
-   - (bulk only) count
-   - total days
-   - total GB
-   - start after first use (y/n)
-   - final confirmation (yes/no)
-
-Other useful commands:
-- `/balance`
-- `/topup <amount>`
-- `/setinbound <id>`
-- `/price <days> <gb>`
-- `/promo <CODE>`
-- `/createinbound ...` (admin only)
+## Project structure
+- `telegram_bot.py` — Telegram UI & FSM flows.
+- `xui_api.py` — x-ui API integration layer.
+- `db.py` — persistence & data/business helpers.
+- `admin_web.py` — admin panel.
