@@ -27,6 +27,10 @@ PASSWORD = os.getenv("XUI_PASSWORD", "")
 SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
+MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
+MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
+MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
+MAX_LINKS_PER_MESSAGE = 10
 
 
 def menu(is_admin: bool) -> InlineKeyboardMarkup:
@@ -151,6 +155,18 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_TELEGRAM_ID
 
 
+def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["flow"] = None
+    context.user_data["wizard"] = {}
+
+
+async def send_links(update: Update, links: List[str]) -> None:
+    if not links:
+        return
+    for i in range(0, len(links), MAX_LINKS_PER_MESSAGE):
+        await update.message.reply_text("\n".join(links[i:i + MAX_LINKS_PER_MESSAGE]))
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.ensure_agent(user.id, user.username or "", user.full_name or "")
@@ -161,9 +177,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Guided UI: /start\n"
-        "Commands: /balance, /topup <amount>, /setinbound <id>, /myinbound, /price <days> <gb>, /promo <CODE>\n"
+        "Commands: /balance, /topup <amount>, /setinbound <id>, /myinbound, /price <days> <gb>, /promo <CODE>, /cancel, /menu\n"
         "Client creation is step-by-step via the menu buttons."
     )
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_flow(context)
+    await update.message.reply_text("Current operation canceled. Use /start to open the menu.")
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Main menu:", reply_markup=menu(is_admin(update.effective_user.id)))
 
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,6 +245,9 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d, g = as_int(context.args[0]), as_int(context.args[1])
     if not d or not g or d <= 0 or g <= 0:
         await update.message.reply_text("days and gb must be positive integers")
+        return
+    if d > MAX_DAYS or g > MAX_GB:
+        await update.message.reply_text(f"Limits exceeded. Max days: {MAX_DAYS}, Max GB: {MAX_GB}")
         return
     p = Plan(d, g)
     await update.message.reply_text(f"Price: {p.price}")
@@ -292,6 +320,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("Use /createinbound <port> <remark> [protocol] [network]")
         else:
             await q.message.reply_text("Only admin")
+    else:
+        await q.message.reply_text("Unknown action. Use /start to refresh menu.")
 
 
 async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,7 +336,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Invalid inbound id")
             return
         db.set_preferred_inbound(uid, inbound)
-        context.user_data["flow"] = None
+        reset_flow(context)
         await update.message.reply_text(f"Default inbound set to {inbound}")
         return
 
@@ -333,6 +363,9 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not days or days <= 0:
             await update.message.reply_text("Invalid days")
             return
+        if days > MAX_DAYS:
+            await update.message.reply_text(f"Days is too high. Max allowed: {MAX_DAYS}")
+            return
         wiz["days"] = days
         context.user_data["flow"] = "common_gb"
         await update.message.reply_text("Step 3: send traffic in GB (e.g. 50):")
@@ -342,6 +375,9 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gb = as_int(txt)
         if not gb or gb <= 0:
             await update.message.reply_text("Invalid GB")
+            return
+        if gb > MAX_GB:
+            await update.message.reply_text(f"GB is too high. Max allowed: {MAX_GB}")
             return
         wiz["gb"] = gb
         if wiz.get("kind") == "single":
@@ -356,6 +392,9 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = as_int(txt)
         if not count or count <= 0:
             await update.message.reply_text("Invalid count")
+            return
+        if count > MAX_BULK_COUNT:
+            await update.message.reply_text(f"Count is too high. Max allowed: {MAX_BULK_COUNT}")
             return
         wiz["count"] = count
         context.user_data["flow"] = "bulk_base"
@@ -387,8 +426,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, wiz
         db.deduct_balance(uid, net, "order.charge", json.dumps({"kind": wiz["kind"], "gross": gross, "disc": disc}))
     except ValueError:
         await update.message.reply_text(f"Insufficient balance. Need {net}")
-        context.user_data["flow"] = None
-        context.user_data["wizard"] = {}
+        reset_flow(context)
         return
 
     x = XUI()
@@ -419,8 +457,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, wiz
         db.add_balance(uid, net, "order.refund", str(exc))
         db.create_order(uid, wiz["inbound"], wiz["kind"], wiz["days"], wiz["gb"], count, gross, disc, net, "failed")
         await update.message.reply_text(f"Creation failed, refunded. Error: {exc}")
-        context.user_data["flow"] = None
-        context.user_data["wizard"] = {}
+        reset_flow(context)
         return
 
     bal = db.get_agent(uid)["balance"]
@@ -428,9 +465,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, wiz
         f"Done ✅\nType: {wiz['kind']}\nInbound: {wiz['inbound']}\nPlan: {wiz['days']}d/{wiz['gb']}GB\n"
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
-    await update.message.reply_text("\n".join(links))
-    context.user_data["flow"] = None
-    context.user_data["wizard"] = {}
+    await send_links(update, links)
+    reset_flow(context)
 
 
 def main() -> None:
@@ -442,6 +478,8 @@ def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("topup", topup))
     app.add_handler(CommandHandler("setinbound", set_inbound))
