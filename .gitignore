@@ -9,3 +9,6 @@ venv/
 # Local bot runtime data
 agents.json
 .env
+
+# SQLite
+bot.db

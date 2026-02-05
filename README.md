@@ -1,84 +1,66 @@
 # 3xui-tgbot
 
-This project integrates a **3x-ui (Sanaei) panel** with a **Telegram bot** for agency-style VPN sales.
+Telegram + 3x-ui sales system with:
+- step-by-step agent order flow,
+- SQLite database storage,
+- simple admin web panel.
 
-## Project goal
-Agents can create VLESS client configs (single or bulk) by selecting package specs such as:
-- plan duration
-- total traffic (GB)
+## Key upgrades
+- **Database-backed storage** (`bot.db`): agents, wallet ledger, orders, promos, settings.
+- **Admin web app** (`admin_web.py`):
+  - set price per GB/day,
+  - create promo codes,
+  - view agent performance (balance, lifetime top-up, clients, spent).
+- **Better agent UX** in Telegram:
+  - guided step-by-step wizard (asks one parameter at a time),
+  - no more long single-line command required for creation,
+  - promo code support for discounts.
+- **Role policy**:
+  - admin-only inbound creation (`ADMIN_TELEGRAM_ID`, default `8477244366`),
+  - agents only create clients on existing inbounds.
 
-The system then:
-1. creates the client(s) on x-ui,
-2. generates VLESS links,
-3. calculates price based on selected specs,
-4. deducts the amount from the agent wallet balance.
+## Environment
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+export XUI_BASE_URL="https://host:port/panelpath"
+export XUI_USERNAME="admin"
+export XUI_PASSWORD="admin"
+export XUI_SERVER_HOST="host"
 
-## Roles
-- **Admin** (`ADMIN_TELEGRAM_ID`, default: `8477244366`): can create inbounds.
-- **Agents**: can only create clients on existing inbounds.
+# optional
+export ADMIN_TELEGRAM_ID="8477244366"
+export BOT_DB_PATH="bot.db"
+export ADMIN_WEB_TOKEN="set-a-secret-token"
+export ADMIN_WEB_PORT="8080"
+```
 
-## Current repository contents
-- `xui-panel-api/inboundCreatorV1.py`: Interactive helper to create x-ui inbounds.
-- `xui-panel-api/clientCreatorV1.py`: Interactive helper to create single/bulk clients and output VLESS links.
-- `telegram_bot.py`: Telegram bot frontend with wallets, pricing, default inbound, and client provisioning.
+## Run bot
+```bash
+pip install -r requirements.txt
+python telegram_bot.py
+```
 
-## Telegram bot quick start
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Set required environment variables:
-   ```bash
-   export TELEGRAM_BOT_TOKEN="..."
-   export XUI_BASE_URL="https://your-host:port/your-panel-path"
-   export XUI_USERNAME="admin"
-   export XUI_PASSWORD="admin"
-   export XUI_SERVER_HOST="your-host"
-   ```
-3. Optional variables:
-   ```bash
-   export PRICE_PER_GB="0.15"
-   export PRICE_PER_DAY="0.10"
-   export AGENTS_FILE="agents.json"
-   export ADMIN_TELEGRAM_ID="8477244366"
-   ```
-4. Run:
-   ```bash
-   python telegram_bot.py
-   ```
+## Run admin web panel
+```bash
+pip install -r requirements.txt
+python admin_web.py
+```
+Open:
+`http://<server-ip>:8080/?token=<ADMIN_WEB_TOKEN>`
 
-## UI/UX improvements
-- Inline button menu for practical day-to-day use.
-- Default inbound support (`/setinbound`) to reduce repetitive input.
-- Guided quick-buy and quick-bulk formats.
-- Clear role-based permission: inbound creation is admin-only.
+## Telegram usage
+1. `/start`
+2. Tap **Create Single Client** or **Create Bulk Clients**
+3. Bot asks parameters one by one:
+   - inbound id (or `default`)
+   - days
+   - GB
+   - count/base (bulk) or remark (single)
 
-## Commands
-- `/start`
-- `/help`
+Other useful commands:
 - `/balance`
 - `/topup <amount>`
-- `/setinbound <inbound_id>`
-- `/myinbound`
+- `/setinbound <id>`
 - `/price <days> <gb>`
-- `/buy <days> <gb> [remark]`
-- `/buy <inbound_id> <days> <gb> [remark]`
-- `/bulk <days> <gb> <count> [base_remark]`
-- `/bulk <inbound_id> <days> <gb> <count> [base_remark]`
-- `/createinbound <port> <remark> [protocol] [network]` (**admin only**)
-
-
-## How to push your commits
-1. Check current branch:
-   ```bash
-   git branch --show-current
-   ```
-2. Add and commit your changes:
-   ```bash
-   git add -A
-   git commit -m "your message"
-   ```
-3. Push your branch to GitHub:
-   ```bash
-   git push -u origin $(git branch --show-current)
-   ```
+- `/promo <CODE>`
+- `/createinbound ...` (admin only)
