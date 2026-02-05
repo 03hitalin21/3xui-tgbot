@@ -66,3 +66,19 @@ The system then:
 - `/bulk <days> <gb> <count> [base_remark]`
 - `/bulk <inbound_id> <days> <gb> <count> [base_remark]`
 - `/createinbound <port> <remark> [protocol] [network]` (**admin only**)
+
+
+## How to push your commits
+1. Check current branch:
+   ```bash
+   git branch --show-current
+   ```
+2. Add and commit your changes:
+   ```bash
+   git add -A
+   git commit -m "your message"
+   ```
+3. Push your branch to GitHub:
+   ```bash
+   git push -u origin $(git branch --show-current)
+   ```
