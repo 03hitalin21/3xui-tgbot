@@ -51,11 +51,14 @@ Open:
 ## Telegram usage
 1. `/start`
 2. Tap **Create Single Client** or **Create Bulk Clients**
-3. Bot asks parameters one by one:
+3. Bot asks parameters one by one with hints:
    - inbound id (or `default`)
-   - days
-   - GB
-   - count/base (bulk) or remark (single)
+   - remark/base remark
+   - (bulk only) count
+   - total days
+   - total GB
+   - start after first use (y/n)
+   - final confirmation (yes/no)
 
 Other useful commands:
 - `/balance`
