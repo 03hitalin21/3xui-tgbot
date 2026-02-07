@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import string
 import time
 import uuid
 from datetime import datetime
@@ -9,7 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import db
 from xui_api import XUIApi, vless_link
@@ -27,6 +29,9 @@ REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 WIZARD_RATE_LIMIT = 5
 WIZARD_RATE_WINDOW = 600
 WIZARD_STARTS: Dict[int, List[float]] = {}
+BROADCAST_CHOOSE_TARGET = 1
+BROADCAST_SEND_MESSAGE = 2
+BROADCAST_PREVIEW_CONFIRM = 3
 
 
 logging.basicConfig(
@@ -52,6 +57,20 @@ def as_int(v: str) -> Optional[int]:
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_TELEGRAM_ID
+
+
+def is_referral_agent(role: str) -> bool:
+    return role in {"reseller", "agent"}
+
+
+def get_user_role(tg_id: int) -> str:
+    agent = db.get_agent(tg_id)
+    return agent["role"] if agent else "reseller"
+
+
+def generate_referral_code(length: int = 8) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,6 +137,29 @@ def low_balance_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def broadcast_target_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("All users", callback_data="broadcast:target:all"),
+                InlineKeyboardButton("Only agents", callback_data="broadcast:target:agents"),
+            ]
+        ]
+    )
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data="broadcast:confirm"),
+                InlineKeyboardButton("✏️ Edit", callback_data="broadcast:edit"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="broadcast:cancel")],
+        ]
+    )
+
+
 def client_actions_keyboard(rows: List[Dict], total_items: int, page: int) -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
     for c in rows:
@@ -151,19 +193,20 @@ def expiry_value(days: int, start_after_first_use: bool) -> int:
     return int((time.time() + days * 86400) * 1000)
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard")],
-            [InlineKeyboardButton("👤 My Clients", callback_data="menu:my_clients")],
-            [InlineKeyboardButton("➕ Create Client", callback_data="menu:create_client")],
-            [InlineKeyboardButton("🌐 Inbounds List", callback_data="menu:inbounds")],
-            [InlineKeyboardButton("💰 Wallet / Balance", callback_data="menu:wallet")],
-            [InlineKeyboardButton("📄 Transactions History", callback_data="menu:tx")],
-            [InlineKeyboardButton("🆘 Support", callback_data="menu:support")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings")],
-        ]
-    )
+def main_menu(role: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard")],
+        [InlineKeyboardButton("👤 My Clients", callback_data="menu:my_clients")],
+        [InlineKeyboardButton("➕ Create Client", callback_data="menu:create_client")],
+        [InlineKeyboardButton("🌐 Inbounds List", callback_data="menu:inbounds")],
+        [InlineKeyboardButton("💰 Wallet / Balance", callback_data="menu:wallet")],
+        [InlineKeyboardButton("📄 Transactions History", callback_data="menu:tx")],
+        [InlineKeyboardButton("🆘 Support", callback_data="menu:support")],
+    ]
+    if role in {"reseller", "agent"}:
+        rows.append([InlineKeyboardButton("🎁 Referral", callback_data="menu:referral")])
+    rows.append([InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings")])
+    return InlineKeyboardMarkup(rows)
 
 
 def create_menu() -> InlineKeyboardMarkup:
@@ -273,13 +316,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     role = "admin" if is_admin(u.id) else "reseller"
     db.ensure_agent(u.id, u.username or "", u.full_name or "", role=role)
+    if context.args:
+        code = context.args[0].strip()
+        referrer = db.get_agent_by_referral_code(code)
+        if referrer and int(referrer["tg_id"]) != u.id:
+            db.set_referred_by(u.id, int(referrer["tg_id"]))
     reset_flow(context)
     logger.info("user_start | user=%s | role=%s", u.id, role)
-    await update.message.reply_text("Welcome to Reseller Panel 👋\nUse the menu below.", reply_markup=main_menu())
+    await update.message.reply_text(
+        "Welcome to Reseller Panel 👋\nUse the menu below.",
+        reply_markup=main_menu(role),
+    )
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Main menu", reply_markup=main_menu())
+    role = get_user_role(update.effective_user.id)
+    await update.message.reply_text("Main menu", reply_markup=main_menu(role))
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,7 +340,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "عملیات لغو شد. به منوی اصلی بازگشتید.",
         reply_markup=ReplyKeyboardRemove(),
     )
-    await update.message.reply_text("Main menu", reply_markup=main_menu())
+    role = get_user_role(update.effective_user.id)
+    await update.message.reply_text("Main menu", reply_markup=main_menu(role))
 
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -300,7 +353,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = q.data
     if data == "menu:home":
-        await q.message.reply_text("Main menu", reply_markup=main_menu())
+        await q.message.reply_text("Main menu", reply_markup=main_menu(role))
         return
 
     if data == "menu:dashboard":
@@ -308,6 +361,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"📊 Dashboard\nBalance: {s['balance']}\nClients: {s['clients']}\nToday sales: {s['today_sales']}\nAll spent: {s['spent']}"
         )
+        return
+
+    if data == "menu:referral":
+        await referral_info(q.message, context, uid, role)
         return
 
     if data == "menu:my_clients":
@@ -453,7 +510,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "عملیات لغو شد. به منوی اصلی بازگشتید.",
                 reply_markup=ReplyKeyboardRemove(),
             )
-            await q.message.reply_text("Main menu", reply_markup=main_menu())
+            await q.message.reply_text("Main menu", reply_markup=main_menu(role))
             return
         if action == "edit":
             context.user_data["flow"] = "wizard_days"
@@ -584,7 +641,8 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "عملیات لغو شد. به منوی اصلی بازگشتید.",
             reply_markup=ReplyKeyboardRemove(),
         )
-        await update.message.reply_text("Main menu", reply_markup=main_menu())
+        role = agent["role"] if agent else "reseller"
+        await update.message.reply_text("Main menu", reply_markup=main_menu(role))
         return
 
     if flow == "set_default_inbound":
@@ -844,7 +902,8 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "عملیات لغو شد. به منوی اصلی بازگشتید.",
                 reply_markup=ReplyKeyboardRemove(),
             )
-            await update.message.reply_text("Main menu", reply_markup=main_menu())
+            role = agent["role"] if agent else "reseller"
+            await update.message.reply_text("Main menu", reply_markup=main_menu(role))
             return
         if v not in ["y", "yes"]:
             await update.message.reply_text("Please answer yes or no", reply_markup=cancel_keyboard())
@@ -1023,6 +1082,159 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Top-up ok. Balance: {bal}")
 
 
+def ensure_referral_code(tg_id: int) -> str:
+    code = db.get_referral_code(tg_id)
+    if code:
+        return code
+    while True:
+        code = generate_referral_code()
+        if not db.get_agent_by_referral_code(code):
+            db.set_referral_code(tg_id, code)
+            return code
+
+
+async def referral_info(message, context: ContextTypes.DEFAULT_TYPE, tg_id: int, role: str) -> None:
+    if not is_referral_agent(role):
+        await message.reply_text("Referral program is available to agents only.")
+        return
+    code = ensure_referral_code(tg_id)
+    stats = db.get_referral_stats(tg_id)
+    username = context.bot.username or "your_bot"
+    link = f"https://t.me/{username}?start={code}"
+    await message.reply_text(
+        "🎁 Referral Program\n"
+        f"Your referral link:\n{link}\n\n"
+        f"Referred users: {stats['referred_count']}\n"
+        f"Total commission earned: {stats['commission_total']}"
+    )
+
+
+async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    role = get_user_role(uid)
+    await referral_info(update.effective_message, context, uid, role)
+
+
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("Only admin can use this command.")
+        return ConversationHandler.END
+    context.user_data.pop("broadcast", None)
+    await update.effective_message.reply_text(
+        "Send to: All users / Only agents?",
+        reply_markup=broadcast_target_keyboard(),
+    )
+    return BROADCAST_CHOOSE_TARGET
+
+
+async def choose_broadcast_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split(":")[-1]
+    if data not in {"all", "agents"}:
+        await query.edit_message_text("Invalid target. Use /broadcast again.")
+        return ConversationHandler.END
+    context.user_data["broadcast"] = {
+        "target": data,
+    }
+    await query.edit_message_text(
+        "Now send the message you want to broadcast (text, photo, document allowed). Use /cancel to stop."
+    )
+    return BROADCAST_SEND_MESSAGE
+
+
+async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    message = update.effective_message
+    if message.text and is_cancel(message.text):
+        await message.reply_text("Broadcast canceled.")
+        return ConversationHandler.END
+
+    broadcast = context.user_data.get("broadcast") or {}
+    broadcast["source_chat_id"] = message.chat_id
+    broadcast["source_message_id"] = message.message_id
+    if message.text:
+        broadcast["preview_text"] = message.text
+    else:
+        broadcast["preview_text"] = message.caption or "[Media message]"
+    context.user_data["broadcast"] = broadcast
+
+    target = broadcast.get("target", "all")
+    target_title = "all users" if target == "all" else "agents"
+    count = db.count_broadcast_targets(target)
+
+    if message.text is None:
+        await context.bot.copy_message(
+            chat_id=message.chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+        )
+        preview_message = (
+            "Broadcast preview:\n\n"
+            f"[Media preview above]\n\n"
+            f"To: {count} {target_title}\nConfirm?"
+        )
+    else:
+        preview_message = (
+            "Broadcast preview:\n\n"
+            f"{broadcast['preview_text']}\n\n"
+            f"To: {count} {target_title}\nConfirm?"
+        )
+
+    await message.reply_text(preview_message, reply_markup=broadcast_confirm_keyboard())
+    return BROADCAST_PREVIEW_CONFIRM
+
+
+async def broadcast_preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":")[-1]
+    if action == "edit":
+        await query.edit_message_text(
+            "Send the updated message you want to broadcast (text, photo, document allowed). Use /cancel to stop."
+        )
+        return BROADCAST_SEND_MESSAGE
+    if action == "cancel":
+        await query.edit_message_text("Broadcast canceled.")
+        return ConversationHandler.END
+    if action != "confirm":
+        await query.edit_message_text("Invalid action.")
+        return ConversationHandler.END
+
+    broadcast = context.user_data.get("broadcast") or {}
+    target = broadcast.get("target", "all")
+    ids = db.list_broadcast_target_ids(target)
+    ids = [uid for uid in ids if uid != ADMIN_TELEGRAM_ID]
+
+    sent = 0
+    failed = 0
+    for uid in ids:
+        try:
+            await context.bot.copy_message(
+                chat_id=uid,
+                from_chat_id=broadcast.get("source_chat_id"),
+                message_id=broadcast.get("source_message_id"),
+            )
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("broadcast_failed | user=%s | error=%s", uid, exc)
+    logger.info("broadcast_complete | target=%s | sent=%s | failed=%s", target, sent, failed)
+    await query.edit_message_text(f"Broadcast sent to {sent}/{sent + failed} users successfully.")
+    return ConversationHandler.END
+
+
+async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("Broadcast canceled.")
+    return ConversationHandler.END
+
+
 def main() -> None:
     db.init_db()
     missing = required_missing()
@@ -1030,11 +1242,28 @@ def main() -> None:
         raise RuntimeError(f"Missing env vars: {missing}")
 
     app = Application.builder().token(BOT_TOKEN).build()
+    broadcast_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", start_broadcast)],
+        states={
+            BROADCAST_CHOOSE_TARGET: [
+                CallbackQueryHandler(choose_broadcast_target, pattern="^broadcast:target:(all|agents)$")
+            ],
+            BROADCAST_SEND_MESSAGE: [
+                MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, receive_broadcast_message)
+            ],
+            BROADCAST_PREVIEW_CONFIRM: [
+                CallbackQueryHandler(broadcast_preview_action, pattern="^broadcast:(confirm|edit|cancel)$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("topup", topup))
+    app.add_handler(CommandHandler("referral", referral_cmd))
+    app.add_handler(broadcast_conv_handler)
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_flow))
     app.run_polling()

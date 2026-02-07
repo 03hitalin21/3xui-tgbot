@@ -41,6 +41,8 @@ def init_db() -> None:
                 balance REAL NOT NULL DEFAULT 0,
                 lifetime_topup REAL NOT NULL DEFAULT 0,
                 preferred_inbound INTEGER,
+                referral_code TEXT,
+                referred_by INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -118,13 +120,17 @@ def init_db() -> None:
         # Migrations for older DBs
         _ensure_column(conn, "agents", "role", "role TEXT NOT NULL DEFAULT 'reseller'")
         _ensure_column(conn, "agents", "is_active", "is_active INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "agents", "referral_code", "referral_code TEXT")
+        _ensure_column(conn, "agents", "referred_by", "referred_by INTEGER")
         _ensure_column(conn, "created_clients", "auto_renew", "auto_renew INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_referral_code ON agents(referral_code)")
 
         defaults = {
             "price_per_gb": "0.15",
             "price_per_day": "0.10",
             "support_text": "Contact admin for support.",
             "low_balance_threshold": "50",
+            "referral_commission_pct": os.getenv("REFERRAL_COMMISSION_PCT", "10"),
         }
         for k, v in defaults.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (k, v))
@@ -150,6 +156,12 @@ def set_setting(key: str, value: str) -> None:
         )
 
 
+def get_setting_float_default(key: str, default: float) -> float:
+    with get_conn() as conn:
+        r = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return float(r["value"]) if r else default
+
+
 def ensure_agent(tg_id: int, username: str = "", full_name: str = "", role: str = "reseller") -> None:
     ts = now_ts()
     with get_conn() as conn:
@@ -169,6 +181,36 @@ def ensure_agent(tg_id: int, username: str = "", full_name: str = "", role: str 
 def get_agent(tg_id: int) -> Optional[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute("SELECT * FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+
+
+def get_agent_by_referral_code(code: str) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM agents WHERE referral_code=?", (code,)).fetchone()
+
+
+def get_referral_code(tg_id: int) -> Optional[str]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT referral_code FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+    return row["referral_code"] if row else None
+
+
+def set_referral_code(tg_id: int, code: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET referral_code=?, updated_at=? WHERE tg_id=?",
+            (code, now_ts(), tg_id),
+        )
+
+
+def set_referred_by(tg_id: int, referrer_id: int) -> None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT referred_by FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+        if not row or row["referred_by"] is not None:
+            return
+        conn.execute(
+            "UPDATE agents SET referred_by=?, updated_at=? WHERE tg_id=?",
+            (referrer_id, now_ts(), tg_id),
+        )
 
 
 def list_resellers(limit: int = 200) -> List[sqlite3.Row]:
@@ -203,7 +245,10 @@ def add_balance(tg_id: int, amount: float, reason: str, meta: str = "") -> float
             (tg_id, amount, reason, meta, now_ts()),
         )
         row = conn.execute("SELECT balance FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
-        return float(row["balance"] if row else 0)
+        balance = float(row["balance"] if row else 0)
+    if amount > 0 and reason.startswith("topup"):
+        apply_referral_commission(tg_id, amount)
+    return balance
 
 
 def deduct_balance(tg_id: int, amount: float, reason: str, meta: str = "") -> float:
@@ -310,6 +355,221 @@ def list_clients_paged(tg_id: int, limit: int, offset: int) -> List[sqlite3.Row]
             "SELECT * FROM created_clients WHERE tg_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
             (tg_id, limit, offset),
         ).fetchall()
+
+
+def list_agents(limit: int = 50) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            ORDER BY a.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def search_agents(query: str, limit: int = 50) -> List[sqlite3.Row]:
+    pattern = f"%{query}%"
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            WHERE a.username LIKE ?
+               OR CAST(a.tg_id AS TEXT) LIKE ?
+               OR a.role LIKE ?
+            ORDER BY a.created_at DESC
+            LIMIT ?
+            """,
+            (pattern, pattern, pattern, limit),
+        ).fetchall()
+
+
+def get_agent_with_client_count(tg_id: int) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            WHERE a.tg_id=?
+            """,
+            (tg_id,),
+        ).fetchone()
+
+
+def manual_adjust_balance(tg_id: int, amount: float, reason: str, admin_note: str = "") -> float:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET balance=balance+?, updated_at=? WHERE tg_id=?",
+            (amount, now_ts(), tg_id),
+        )
+        conn.execute(
+            "INSERT INTO wallet_ledger(tg_id, amount, reason, meta, created_at) VALUES(?,?,?,?,?)",
+            (tg_id, amount, reason, admin_note, now_ts()),
+        )
+        row = conn.execute("SELECT balance FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+        balance = float(row["balance"] if row else 0)
+    if amount > 0:
+        apply_referral_commission(tg_id, amount)
+    return balance
+
+
+def apply_referral_commission(tg_id: int, topup_amount: float) -> float:
+    if topup_amount <= 0:
+        return 0.0
+    with get_conn() as conn:
+        row = conn.execute("SELECT referred_by FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+        if not row or row["referred_by"] is None:
+            return 0.0
+        referrer_id = int(row["referred_by"])
+        pct = get_setting_float_default(
+            "referral_commission_pct",
+            float(os.getenv("REFERRAL_COMMISSION_PCT", "10")),
+        )
+        commission = round(topup_amount * pct / 100, 2)
+        if commission <= 0:
+            return 0.0
+        conn.execute(
+            "UPDATE agents SET balance=balance+?, updated_at=? WHERE tg_id=?",
+            (commission, now_ts(), referrer_id),
+        )
+        conn.execute(
+            "INSERT INTO wallet_ledger(tg_id, amount, reason, meta, created_at) VALUES(?,?,?,?,?)",
+            (referrer_id, commission, "referral_commission", f"Commission from user {tg_id} top-up", now_ts()),
+        )
+        return commission
+
+
+def get_referral_stats(tg_id: int) -> Dict[str, float]:
+    with get_conn() as conn:
+        referred = conn.execute("SELECT COUNT(*) c FROM agents WHERE referred_by=?", (tg_id,)).fetchone()
+        commissions = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM wallet_ledger WHERE tg_id=? AND reason='referral_commission'",
+            (tg_id,),
+        ).fetchone()
+    return {
+        "referred_count": int(referred["c"] if referred else 0),
+        "commission_total": float(commissions["s"] if commissions else 0),
+    }
+
+
+def list_referral_stats() -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.tg_id,
+                   a.username,
+                   a.role,
+                   COALESCE(r.referred_count, 0) AS referred_count,
+                   COALESCE(c.commission_total, 0) AS commission_total
+            FROM agents a
+            LEFT JOIN (
+                SELECT referred_by AS tg_id, COUNT(*) AS referred_count
+                FROM agents
+                WHERE referred_by IS NOT NULL
+                GROUP BY referred_by
+            ) r ON r.tg_id = a.tg_id
+            LEFT JOIN (
+                SELECT tg_id, COALESCE(SUM(amount), 0) AS commission_total
+                FROM wallet_ledger
+                WHERE reason='referral_commission'
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            WHERE a.role IN ('reseller','agent')
+            ORDER BY commission_total DESC
+            """
+        ).fetchall()
+
+
+def list_referrals(limit: int = 200) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT u.tg_id AS user_tg_id,
+                   u.username AS user_username,
+                   r.tg_id AS referrer_tg_id,
+                   r.username AS referrer_username,
+                   u.created_at AS referred_at
+            FROM agents u
+            JOIN agents r ON r.tg_id = u.referred_by
+            ORDER BY u.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def iter_transactions_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT w.id, w.tg_id, a.username, w.amount, w.reason, w.meta, w.created_at
+            FROM wallet_ledger w
+            LEFT JOIN agents a ON a.tg_id = w.tg_id
+            ORDER BY w.id DESC
+            """
+        ):
+            yield row
+
+
+def iter_clients_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT c.tg_id, a.username, c.email, c.uuid, c.gb, c.days, c.created_at
+            FROM created_clients c
+            LEFT JOIN agents a ON a.tg_id = c.tg_id
+            ORDER BY c.id DESC
+            """
+        ):
+            yield row
+
+
+def iter_agents_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT a.username,
+                   a.tg_id,
+                   a.balance,
+                   COALESCE(cc.client_count, 0) AS client_count,
+                   COALESCE(o.total_revenue, 0) AS total_revenue
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) cc ON cc.tg_id = a.tg_id
+            LEFT JOIN (
+                SELECT tg_id, COALESCE(SUM(net_price), 0) AS total_revenue
+                FROM orders
+                WHERE status='success'
+                GROUP BY tg_id
+            ) o ON o.tg_id = a.tg_id
+            ORDER BY total_revenue DESC
+            """
+        ):
+            yield row
 
 
 def get_client(tg_id: int, client_id: int) -> Optional[sqlite3.Row]:
@@ -494,6 +754,30 @@ def sales_by_month(months: int = 6) -> List[sqlite3.Row]:
 def get_all_user_ids() -> List[int]:
     with get_conn() as conn:
         rows = conn.execute("SELECT tg_id FROM agents WHERE is_active=1").fetchall()
+    return [int(r["tg_id"]) for r in rows]
+
+
+def count_broadcast_targets(target: str) -> int:
+    if target == "agents":
+        query = "SELECT COUNT(*) c FROM agents WHERE is_active=1 AND role IN ('reseller','agent')"
+        params = ()
+    else:
+        query = "SELECT COUNT(*) c FROM agents WHERE is_active=1"
+        params = ()
+    with get_conn() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def list_broadcast_target_ids(target: str) -> List[int]:
+    if target == "agents":
+        query = "SELECT tg_id FROM agents WHERE is_active=1 AND role IN ('reseller','agent')"
+        params = ()
+    else:
+        query = "SELECT tg_id FROM agents WHERE is_active=1"
+        params = ()
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [int(r["tg_id"]) for r in rows]
 
 
