@@ -1,11 +1,12 @@
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import db
@@ -18,6 +19,8 @@ MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
 MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
 MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
+CANCEL_OPTIONS = {"cancel", "لغو"}
+REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass
@@ -40,6 +43,32 @@ def is_admin(user_id: int) -> bool:
 def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["flow"] = None
     context.user_data["wizard"] = {}
+
+
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([["لغو", "Cancel"]], resize_keyboard=True)
+
+
+def is_cancel(text: str) -> bool:
+    return text.strip().lower() in CANCEL_OPTIONS
+
+
+def parse_positive_int(text: str) -> Optional[int]:
+    if not text.isdigit():
+        return None
+    value = int(text)
+    if value <= 0:
+        return None
+    return value
+
+
+def normalize_remark(text: str) -> Optional[str]:
+    remark = text.strip()
+    if len(remark) < 2 or len(remark) > 64:
+        return None
+    if not REMARK_PATTERN.match(remark):
+        return None
+    return remark
 
 
 def required_missing() -> str:
@@ -148,16 +177,16 @@ def inbound_price(inbound_id: int, days: int, gb: int) -> float:
 
 
 def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
+    count = w.get("count", 1)
     return (
-        "🧾 Confirm order\n"
-        f"Type: {w['kind']}\nInbound: {w['inbound_id']}\n"
+        "🧾 Summary\n"
+        f"{count} client(s), {w['days']} days, {w['gb']} GB\n"
+        f"Cost: {net} (gross {gross}, discount {discount}%)\n"
+        f"Inbound: {w['inbound_id']}\n"
         f"Remark/Base: {w.get('remark') or w.get('base_remark')}\n"
-        f"Days: {w['days']}\nGB: {w['gb']}\n"
         f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
-        f"Auto-renew: {'Yes' if w['auto_renew'] else 'No'}\n"
-        f"Count: {w.get('count', 1)}\n"
-        f"Gross: {gross}\nDiscount: {discount}%\nFinal: {net}\n\n"
-        "Reply with: yes / no"
+        f"Auto-renew: {'Yes' if w['auto_renew'] else 'No'}\n\n"
+        "Confirm? Reply yes / no"
     )
 
 
@@ -175,7 +204,8 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_flow(context)
-    await update.message.reply_text("Operation canceled.")
+    await update.message.reply_text("Operation canceled.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Main menu", reply_markup=main_menu())
 
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,7 +309,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "single"}
         await q.message.reply_text(
-            "➕ Single client wizard\nStep 1/7: send inbound ID (or type: default)."
+            "➕ Single client wizard\nStep 1/7: send inbound ID (or type: default).",
+            reply_markup=cancel_keyboard(),
         )
         return
 
@@ -287,7 +318,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "bulk"}
         await q.message.reply_text(
-            "➕ Bulk client wizard\nStep 1/8: send inbound ID (or type: default)."
+            "➕ Bulk client wizard\nStep 1/8: send inbound ID (or type: default).",
+            reply_markup=cancel_keyboard(),
         )
         return
 
@@ -386,6 +418,13 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agent = db.get_agent(uid)
     flow = context.user_data.get("flow")
     w = context.user_data.get("wizard", {})
+
+    if is_cancel(txt):
+        reset_flow(context)
+        context.user_data.pop("promo_discount", None)
+        await update.message.reply_text("Operation canceled.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Main menu", reply_markup=main_menu())
+        return
 
     if flow == "set_default_inbound":
         iid = as_int(txt)
@@ -497,89 +536,118 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if flow == "wizard_inbound":
         if txt.lower() == "default":
             if not agent or not agent["preferred_inbound"]:
-                await update.message.reply_text("No default inbound set. Send numeric inbound ID.")
+                await update.message.reply_text(
+                    "No default inbound set. Send numeric inbound ID.",
+                    reply_markup=cancel_keyboard(),
+                )
                 return
             w["inbound_id"] = int(agent["preferred_inbound"])
         else:
-            iid = as_int(txt)
-            if not iid or iid <= 0:
-                await update.message.reply_text("Invalid inbound ID")
+            iid = parse_positive_int(txt)
+            if not iid:
+                await update.message.reply_text("Invalid inbound ID. Send digits only.", reply_markup=cancel_keyboard())
                 return
             w["inbound_id"] = iid
         context.user_data["wizard"] = w
         if w["kind"] == "single":
             context.user_data["flow"] = "wizard_remark"
-            await update.message.reply_text("Step 2/7: send client remark/email. Hint: user123")
+            await update.message.reply_text(
+                "Step 2/7: send client remark/email. Hint: user123",
+                reply_markup=cancel_keyboard(),
+            )
         else:
             context.user_data["flow"] = "wizard_base"
-            await update.message.reply_text("Step 2/8: send base remark for bulk. Hint: teamA")
+            await update.message.reply_text(
+                "Step 2/8: send base remark for bulk. Hint: teamA",
+                reply_markup=cancel_keyboard(),
+            )
         return
 
     if flow == "wizard_remark":
-        if len(txt) < 2:
-            await update.message.reply_text("Remark too short")
+        remark = normalize_remark(txt)
+        if not remark:
+            await update.message.reply_text(
+                "Remark must be 2-64 chars using letters, numbers, underscore, or dash only.",
+                reply_markup=cancel_keyboard(),
+            )
             return
-        w["remark"] = txt
+        w["remark"] = remark
         context.user_data["flow"] = "wizard_days"
-        await update.message.reply_text("Step 3/7: send total days. Hint: 30")
+        await update.message.reply_text("Step 3/7: send total days. Hint: 30", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_base":
-        if len(txt) < 2:
-            await update.message.reply_text("Base remark too short")
+        base_remark = normalize_remark(txt)
+        if not base_remark:
+            await update.message.reply_text(
+                "Base remark must be 2-64 chars using letters, numbers, underscore, or dash only.",
+                reply_markup=cancel_keyboard(),
+            )
             return
-        w["base_remark"] = txt
+        w["base_remark"] = base_remark
         context.user_data["flow"] = "wizard_count"
-        await update.message.reply_text("Step 3/8: send number of clients. Hint: 5")
+        await update.message.reply_text("Step 3/8: send number of clients. Hint: 5", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_count":
-        c = as_int(txt)
-        if not c or c <= 0 or c > MAX_BULK_COUNT:
-            await update.message.reply_text(f"Invalid count. max={MAX_BULK_COUNT}")
+        c = parse_positive_int(txt)
+        if not c or c > MAX_BULK_COUNT:
+            await update.message.reply_text(
+                f"Invalid count. Enter a number between 1 and {MAX_BULK_COUNT}.",
+                reply_markup=cancel_keyboard(),
+            )
             return
         w["count"] = c
         context.user_data["flow"] = "wizard_days"
-        await update.message.reply_text("Step 4/8: send total days. Hint: 30")
+        await update.message.reply_text("Step 4/8: send total days. Hint: 30", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_days":
-        d = as_int(txt)
-        if not d or d <= 0 or d > MAX_DAYS:
-            await update.message.reply_text(f"Invalid days. max={MAX_DAYS}")
+        d = parse_positive_int(txt)
+        if not d or d > MAX_DAYS:
+            await update.message.reply_text(
+                f"Invalid days. Enter a number between 1 and {MAX_DAYS}.",
+                reply_markup=cancel_keyboard(),
+            )
             return
         w["days"] = d
         context.user_data["flow"] = "wizard_gb"
         step = "Step 4/7" if w["kind"] == "single" else "Step 5/8"
-        await update.message.reply_text(f"{step}: send total GB. Hint: 50")
+        await update.message.reply_text(f"{step}: send total GB. Hint: 50", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_gb":
-        g = as_int(txt)
-        if not g or g <= 0 or g > MAX_GB:
-            await update.message.reply_text(f"Invalid GB. max={MAX_GB}")
+        g = parse_positive_int(txt)
+        if not g or g > MAX_GB:
+            await update.message.reply_text(
+                f"Invalid GB. Enter a number between 1 and {MAX_GB}.",
+                reply_markup=cancel_keyboard(),
+            )
             return
         w["gb"] = g
         context.user_data["flow"] = "wizard_start_after_first_use"
         step = "Step 5/7" if w["kind"] == "single" else "Step 6/8"
-        await update.message.reply_text(f"{step}: start after first use? (y/n)")
+        await update.message.reply_text(f"{step}: start after first use? (y/n)", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_start_after_first_use":
         v = txt.lower()
         if v not in ["y", "n", "yes", "no"]:
-            await update.message.reply_text("Please answer y or n")
+            await update.message.reply_text("Please answer y or n", reply_markup=cancel_keyboard())
             return
         w["start_after_first_use"] = v in ["y", "yes"]
         context.user_data["flow"] = "wizard_auto_renew"
         step = "Step 6/7" if w["kind"] == "single" else "Step 7/8"
-        await update.message.reply_text(f"{step}: Enable auto-renew? (y/n)\nHint: auto-renew resets one day before expiry.")
+        await update.message.reply_text(
+            f"{step}: Enable auto-renew? (y/n)\nHint: auto-renew resets one day before expiry.",
+            reply_markup=cancel_keyboard(),
+        )
         return
 
     if flow == "wizard_auto_renew":
         v = txt.lower()
         if v not in ["y", "n", "yes", "no"]:
-            await update.message.reply_text("Please answer y or n")
+            await update.message.reply_text("Please answer y or n", reply_markup=cancel_keyboard())
             return
         w["auto_renew"] = v in ["y", "yes"]
 
@@ -595,7 +663,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         discount = float(context.user_data.get("promo_discount", 0.0))
         net = round(gross * (1 - discount / 100), 2)
         context.user_data["flow"] = "wizard_confirm"
-        await update.message.reply_text(wizard_summary(w, gross, discount, net))
+        await update.message.reply_text(wizard_summary(w, gross, discount, net), reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_confirm":
@@ -603,10 +671,11 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if v in ["n", "no"]:
             reset_flow(context)
             context.user_data.pop("promo_discount", None)
-            await update.message.reply_text("Order canceled.")
+            await update.message.reply_text("Order canceled.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Main menu", reply_markup=main_menu())
             return
         if v not in ["y", "yes"]:
-            await update.message.reply_text("Please answer yes or no")
+            await update.message.reply_text("Please answer yes or no", reply_markup=cancel_keyboard())
             return
         await finalize_order(update, context, w)
         return
@@ -627,14 +696,20 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
         reset_flow(context)
-        await update.message.reply_text("Your reseller account is disabled. Contact admin.")
+        await update.message.reply_text(
+            "Your reseller account is disabled. Contact admin.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return
 
     try:
         db.deduct_balance(uid, net, "order.charge", json.dumps({"kind": w["kind"], "inbound": w["inbound_id"]}))
     except ValueError:
         reset_flow(context)
-        await update.message.reply_text(f"Insufficient balance. Required: {net}")
+        await update.message.reply_text(
+            f"Insufficient balance. Required: {net}",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return
 
     api = XUIApi()
@@ -711,23 +786,27 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     except Exception as exc:
         db.add_balance(uid, net, "order.refund", str(exc))
         db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
-        await send_notification(
-            context,
-            uid,
-            f"❌ <b>Creation failed</b>\nRefunded: {net}\nReason: {exc}",
-        )
         reset_flow(context)
-        await update.message.reply_text(f"Panel/API error. Refunded. Details: {exc}")
+        await update.message.reply_text(
+            "⚠️ We couldn't create the client(s) right now. Your balance was refunded. Please try again later.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return
 
     bal = db.get_agent(uid)["balance"]
-    await update.message.reply_text(
+    summary = (
         f"✅ Client(s) created\nType: {w['kind']}\nInbound: {w['inbound_id']}\n"
         f"Days: {w['days']} | GB: {w['gb']} | Count: {count}\n"
         f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'} | Auto-renew: {'Yes' if auto_renew else 'No'}\n"
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
-    await send_links(update, links)
+    configs = "\n".join(links)
+    message = f"{summary}\n\nConfigs:\n{configs}" if configs else summary
+    if len(message) <= 4000:
+        await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text(summary, reply_markup=ReplyKeyboardRemove())
+        await send_links(update, links)
 
     # QR preview for single client
     if len(links) == 1:
