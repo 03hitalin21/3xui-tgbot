@@ -101,6 +101,7 @@ def init_db() -> None:
                 days INTEGER NOT NULL,
                 gb INTEGER NOT NULL,
                 start_after_first_use INTEGER NOT NULL DEFAULT 0,
+                auto_renew INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
 
@@ -117,6 +118,7 @@ def init_db() -> None:
         # Migrations for older DBs
         _ensure_column(conn, "agents", "role", "role TEXT NOT NULL DEFAULT 'reseller'")
         _ensure_column(conn, "agents", "is_active", "is_active INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "created_clients", "auto_renew", "auto_renew INTEGER NOT NULL DEFAULT 0")
 
         defaults = {
             "price_per_gb": "0.15",
@@ -243,14 +245,24 @@ def create_order(
         return int(cur.lastrowid)
 
 
-def save_created_client(tg_id: int, inbound_id: int, email: str, uuid_: str, link: str, days: int, gb: int, start_after_first_use: bool):
+def save_created_client(
+    tg_id: int,
+    inbound_id: int,
+    email: str,
+    uuid_: str,
+    link: str,
+    days: int,
+    gb: int,
+    start_after_first_use: bool,
+    auto_renew: bool,
+):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO created_clients(tg_id,inbound_id,email,uuid,vless_link,days,gb,start_after_first_use,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?)
+            INSERT INTO created_clients(tg_id,inbound_id,email,uuid,vless_link,days,gb,start_after_first_use,auto_renew,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
             """,
-            (tg_id, inbound_id, email, uuid_, link, days, gb, 1 if start_after_first_use else 0, now_ts()),
+            (tg_id, inbound_id, email, uuid_, link, days, gb, 1 if start_after_first_use else 0, 1 if auto_renew else 0, now_ts()),
         )
 
 
@@ -323,6 +335,27 @@ def apply_promo(code: str, tg_id: int) -> float:
         conn.execute("INSERT INTO promo_redemptions(code, tg_id, redeemed_at) VALUES(?,?,?)", (c, tg_id, now_ts()))
         conn.execute("UPDATE promo_codes SET used_count=used_count+1 WHERE code=?", (c,))
         return float(p["discount_percent"])
+
+
+def list_promos() -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM promo_codes ORDER BY created_at DESC").fetchall()
+
+
+def top_agents(limit: int = 100) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.tg_id, a.username, a.full_name, a.balance, a.lifetime_topup,
+                   COALESCE(SUM(o.count),0) clients, COALESCE(SUM(o.net_price),0) spent
+            FROM agents a
+            LEFT JOIN orders o ON o.tg_id=a.tg_id AND o.status='success'
+            GROUP BY a.tg_id
+            ORDER BY spent DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
 
 def list_promos() -> List[sqlite3.Row]:

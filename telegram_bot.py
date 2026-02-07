@@ -118,6 +118,7 @@ def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
         f"Remark/Base: {w.get('remark') or w.get('base_remark')}\n"
         f"Days: {w['days']}\nGB: {w['gb']}\n"
         f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
+        f"Auto-renew: {'Yes' if w['auto_renew'] else 'No'}\n"
         f"Count: {w.get('count', 1)}\n"
         f"Gross: {gross}\nDiscount: {discount}%\nFinal: {net}\n\n"
         "Reply with: yes / no"
@@ -233,7 +234,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "single"}
         await q.message.reply_text(
-            "➕ Single client wizard\nStep 1/6: send inbound ID (or type: default)."
+            "➕ Single client wizard\nStep 1/7: send inbound ID (or type: default)."
         )
         return
 
@@ -241,7 +242,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "bulk"}
         await q.message.reply_text(
-            "➕ Bulk client wizard\nStep 1/7: send inbound ID (or type: default)."
+            "➕ Bulk client wizard\nStep 1/8: send inbound ID (or type: default)."
         )
         return
 
@@ -404,10 +405,10 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["wizard"] = w
         if w["kind"] == "single":
             context.user_data["flow"] = "wizard_remark"
-            await update.message.reply_text("Step 2/6: send client remark/email. Hint: user123")
+            await update.message.reply_text("Step 2/7: send client remark/email. Hint: user123")
         else:
             context.user_data["flow"] = "wizard_base"
-            await update.message.reply_text("Step 2/7: send base remark for bulk. Hint: teamA")
+            await update.message.reply_text("Step 2/8: send base remark for bulk. Hint: teamA")
         return
 
     if flow == "wizard_remark":
@@ -416,7 +417,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["remark"] = txt
         context.user_data["flow"] = "wizard_days"
-        await update.message.reply_text("Step 3/6: send total days. Hint: 30")
+        await update.message.reply_text("Step 3/7: send total days. Hint: 30")
         return
 
     if flow == "wizard_base":
@@ -425,7 +426,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["base_remark"] = txt
         context.user_data["flow"] = "wizard_count"
-        await update.message.reply_text("Step 3/7: send number of clients. Hint: 5")
+        await update.message.reply_text("Step 3/8: send number of clients. Hint: 5")
         return
 
     if flow == "wizard_count":
@@ -435,7 +436,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["count"] = c
         context.user_data["flow"] = "wizard_days"
-        await update.message.reply_text("Step 4/7: send total days. Hint: 30")
+        await update.message.reply_text("Step 4/8: send total days. Hint: 30")
         return
 
     if flow == "wizard_days":
@@ -445,7 +446,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["days"] = d
         context.user_data["flow"] = "wizard_gb"
-        step = "Step 4/6" if w["kind"] == "single" else "Step 5/7"
+        step = "Step 4/7" if w["kind"] == "single" else "Step 5/8"
         await update.message.reply_text(f"{step}: send total GB. Hint: 50")
         return
 
@@ -456,7 +457,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["gb"] = g
         context.user_data["flow"] = "wizard_start_after_first_use"
-        step = "Step 5/6" if w["kind"] == "single" else "Step 6/7"
+        step = "Step 5/7" if w["kind"] == "single" else "Step 6/8"
         await update.message.reply_text(f"{step}: start after first use? (y/n)")
         return
 
@@ -466,6 +467,17 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Please answer y or n")
             return
         w["start_after_first_use"] = v in ["y", "yes"]
+        context.user_data["flow"] = "wizard_auto_renew"
+        step = "Step 6/7" if w["kind"] == "single" else "Step 7/8"
+        await update.message.reply_text(f"{step}: Enable auto-renew? (y/n)\nHint: auto-renew resets one day before expiry.")
+        return
+
+    if flow == "wizard_auto_renew":
+        v = txt.lower()
+        if v not in ["y", "n", "yes", "no"]:
+            await update.message.reply_text("Please answer y or n")
+            return
+        w["auto_renew"] = v in ["y", "yes"]
 
         try:
             unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
@@ -505,6 +517,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     gross = round(unit * count, 2)
     disc = float(context.user_data.pop("promo_discount", 0.0))
     net = round(gross * (1 - disc / 100), 2)
+    auto_renew = bool(w.get("auto_renew", False))
+    reset_days = max(w["days"] - 1, 0) if auto_renew else 0
 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
@@ -542,11 +556,21 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                 "tgId": str(uid),
                 "subId": "",
                 "comment": "tg",
-                "reset": 0,
+                "reset": reset_days,
             })
             link = vless_link(uidc, inbound, email)
             links.append(link)
-            db.save_created_client(uid, w["inbound_id"], email, uidc, link, w["days"], w["gb"], w["start_after_first_use"])
+            db.save_created_client(
+                uid,
+                w["inbound_id"],
+                email,
+                uidc,
+                link,
+                w["days"],
+                w["gb"],
+                w["start_after_first_use"],
+                auto_renew,
+            )
         else:
             for i in range(w["count"]):
                 uidc = str(uuid.uuid4())
@@ -562,11 +586,21 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                     "tgId": str(uid),
                     "subId": "",
                     "comment": "tg",
-                    "reset": 0,
+                    "reset": reset_days,
                 })
                 link = vless_link(uidc, inbound, email)
                 links.append(link)
-                db.save_created_client(uid, w["inbound_id"], email, uidc, link, w["days"], w["gb"], w["start_after_first_use"])
+                db.save_created_client(
+                    uid,
+                    w["inbound_id"],
+                    email,
+                    uidc,
+                    link,
+                    w["days"],
+                    w["gb"],
+                    w["start_after_first_use"],
+                    auto_renew,
+                )
 
         api.add_clients(w["inbound_id"], clients)
         db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "success")
@@ -581,7 +615,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     await update.message.reply_text(
         f"✅ Client(s) created\nType: {w['kind']}\nInbound: {w['inbound_id']}\n"
         f"Days: {w['days']} | GB: {w['gb']} | Count: {count}\n"
-        f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
+        f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'} | Auto-renew: {'Yes' if auto_renew else 'No'}\n"
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
     await send_links(update, links)

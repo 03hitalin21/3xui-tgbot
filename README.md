@@ -26,7 +26,8 @@ Commercial-grade Telegram reseller panel for 3x-ui / Sanaei.
 4. Enter total days
 5. Enter total GB
 6. Start after first use? (y/n)
-7. Confirm (yes/no)
+7. Auto-renew? (y/n)
+8. Confirm (yes/no)
 
 After creation:
 - configuration links are shown,

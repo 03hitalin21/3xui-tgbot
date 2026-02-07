@@ -56,6 +56,36 @@ class XUIApi:
         if not r.json().get("success"):
             raise RuntimeError(f"Client creation failed: {r.text}")
 
+    def update_clients(self, inbound_id: int, clients: List[dict]) -> None:
+        payload = {"id": inbound_id, "settings": json.dumps({"clients": clients})}
+        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/updateClient", data=payload, timeout=30)
+        if not r.json().get("success"):
+            raise RuntimeError(f"Client update failed: {r.text}")
+
+    def set_client_enabled(self, inbound_id: int, client_payload: dict, enabled: bool) -> None:
+        client_payload["enable"] = enabled
+        self.update_clients(inbound_id, [client_payload])
+
+    def delete_client(self, inbound_id: int, client_uuid: str) -> None:
+        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}", timeout=30)
+        data = r.json()
+        if not data.get("success"):
+            raise RuntimeError(f"Client delete failed: {r.text}")
+
+    def last_online(self) -> Dict[str, int]:
+        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/lastOnline", timeout=20)
+        data = r.json()
+        if not data.get("success"):
+            raise RuntimeError("Failed to fetch lastOnline")
+        return data.get("obj", {})
+
+    def onlines(self) -> List[str]:
+        r = self.s.post(f"{BASE_URL}/panel/api/inbounds/onlines", timeout=20)
+        data = r.json()
+        if not data.get("success"):
+            raise RuntimeError("Failed to fetch onlines")
+        return data.get("obj", [])
+
     def create_inbound(self, port: int, remark: str, protocol: str = "vless", network: str = "tcp") -> int:
         payload = {
             "up": 0,
