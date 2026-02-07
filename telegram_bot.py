@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 import re
 import time
 import uuid
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -14,6 +16,7 @@ from xui_api import XUIApi, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
+LOW_BALANCE_THRESHOLD = float(os.getenv("LOW_BALANCE_THRESHOLD", db.get_setting_float("low_balance_threshold")))
 MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
 MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
 MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
@@ -21,6 +24,17 @@ MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
 CANCEL_OPTIONS = {"cancel", "لغو"}
 REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+WIZARD_RATE_LIMIT = 5
+WIZARD_RATE_WINDOW = 600
+WIZARD_STARTS: Dict[int, List[float]] = {}
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,6 +83,60 @@ def normalize_remark(text: str) -> Optional[str]:
     if not REMARK_PATTERN.match(remark):
         return None
     return remark
+
+
+def can_start_wizard(user_id: int) -> bool:
+    now = time.time()
+    timestamps = [ts for ts in WIZARD_STARTS.get(user_id, []) if now - ts < WIZARD_RATE_WINDOW]
+    if len(timestamps) >= WIZARD_RATE_LIMIT:
+        WIZARD_STARTS[user_id] = timestamps
+        return False
+    timestamps.append(now)
+    WIZARD_STARTS[user_id] = timestamps
+    return True
+
+
+def preview_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ تایید", callback_data="wizard:confirm"),
+                InlineKeyboardButton("✏️ ویرایش", callback_data="wizard:edit"),
+            ],
+            [InlineKeyboardButton("لغو", callback_data="wizard:cancel")],
+        ]
+    )
+
+
+def low_balance_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("شارژ کیف پول", callback_data="menu:wallet")],
+            [InlineKeyboardButton("پشتیبانی", callback_data="menu:support")],
+            [InlineKeyboardButton("ادامه", callback_data="menu:home")],
+        ]
+    )
+
+
+def client_actions_keyboard(rows: List[Dict], total_items: int, page: int) -> InlineKeyboardMarkup:
+    buttons: List[List[InlineKeyboardButton]] = []
+    for c in rows:
+        cid = c["id"]
+        buttons.append(
+            [
+                InlineKeyboardButton("نمایش کانفیگ", callback_data=f"client_action:{cid}:config"),
+                InlineKeyboardButton("QR کد", callback_data=f"client_action:{cid}:qr"),
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton("جزئیات", callback_data=f"client_action:{cid}:details"),
+                InlineKeyboardButton("تمدید خودکار", callback_data=f"client_action:{cid}:renew"),
+            ]
+        )
+    if total_items > LIST_PAGE_SIZE:
+        buttons.extend(build_pagination(total_items, page, LIST_PAGE_SIZE, "page:clients").inline_keyboard)
+    return InlineKeyboardMarkup(buttons)
 
 
 def required_missing() -> str:
@@ -128,8 +196,9 @@ def settings_menu(admin: bool) -> InlineKeyboardMarkup:
 
 
 async def send_links(update: Update, links: List[str]) -> None:
+    message = update.effective_message
     for i in range(0, len(links), MAX_LINKS_PER_MESSAGE):
-        await update.message.reply_text("\n".join(links[i:i + MAX_LINKS_PER_MESSAGE]))
+        await message.reply_text("\n".join(links[i:i + MAX_LINKS_PER_MESSAGE]))
 
 
 def build_pagination(total_items: int, current_page: int, items_per_page: int, callback_prefix: str) -> InlineKeyboardMarkup:
@@ -176,17 +245,27 @@ def inbound_price(inbound_id: int, days: int, gb: int) -> float:
     return round(gb * ppgb + days * ppday, 2)
 
 
+def inbound_pricing_text(inbound_id: int) -> str:
+    rule = db.inbound_rule(inbound_id)
+    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else db.get_setting_float("price_per_gb")
+    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else db.get_setting_float("price_per_day")
+    return f"{ppgb} برای هر GB + {ppday} برای هر روز"
+
+
 def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
     count = w.get("count", 1)
+    total_gb = w["gb"] * count
     return (
-        "🧾 Summary\n"
-        f"{count} client(s), {w['days']} days, {w['gb']} GB\n"
-        f"Cost: {net} (gross {gross}, discount {discount}%)\n"
-        f"Inbound: {w['inbound_id']}\n"
-        f"Remark/Base: {w.get('remark') or w.get('base_remark')}\n"
-        f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'}\n"
-        f"Auto-renew: {'Yes' if w['auto_renew'] else 'No'}\n\n"
-        "Confirm? Reply yes / no"
+        "🧾 <b>پیش‌نمایش سفارش</b>\n"
+        f"تعداد کلاینت: <b>{count}</b>\n"
+        f"مدت: <b>{w['days']} روز</b>\n"
+        f"حجم کل: <b>{total_gb} گیگ</b>\n"
+        f"هزینه کل: <b>{net}</b> واحد (قیمت: {inbound_pricing_text(w['inbound_id'])})\n"
+        f"inbound: <b>{w['inbound_id']}</b>\n"
+        f"remark/base: <b>{w.get('remark') or w.get('base_remark')}</b>\n"
+        f"شروع بعد از اولین استفاده: <b>{'بله' if w['start_after_first_use'] else 'خیر'}</b>\n"
+        f"تمدید خودکار: <b>{'بله' if w['auto_renew'] else 'خیر'}</b>\n"
+        f"تخفیف: <b>{discount}%</b> | مبلغ ناخالص: <b>{gross}</b>"
     )
 
 
@@ -195,6 +274,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = "admin" if is_admin(u.id) else "reseller"
     db.ensure_agent(u.id, u.username or "", u.full_name or "", role=role)
     reset_flow(context)
+    logger.info("user_start | user=%s | role=%s", u.id, role)
     await update.message.reply_text("Welcome to Reseller Panel 👋\nUse the menu below.", reply_markup=main_menu())
 
 
@@ -204,7 +284,10 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_flow(context)
-    await update.message.reply_text("Operation canceled.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "عملیات لغو شد. به منوی اصلی بازگشتید.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     await update.message.reply_text("Main menu", reply_markup=main_menu())
 
 
@@ -237,7 +320,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [f"👤 Your clients (page {page}/{total_pages}):"]
         for c in rows:
             lines.append(f"• {c['email']} | inbound {c['inbound_id']} | {c['days']}d/{c['gb']}GB")
-        await q.message.reply_text("\n".join(lines), reply_markup=build_pagination(total, page, LIST_PAGE_SIZE, "page:clients"))
+        await q.message.reply_text(
+            "\n".join(lines),
+            reply_markup=client_actions_keyboard(rows, total, page),
+        )
         return
 
     if data == "menu:create_client":
@@ -306,8 +392,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "create:single":
+        if not can_start_wizard(uid):
+            await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
+            return
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "single"}
+        logger.info("wizard_start | user=%s | kind=single", uid)
         await q.message.reply_text(
             "➕ Single client wizard\nStep 1/7: send inbound ID (or type: default).",
             reply_markup=cancel_keyboard(),
@@ -315,8 +405,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "create:bulk":
+        if not can_start_wizard(uid):
+            await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
+            return
         context.user_data["flow"] = "wizard_inbound"
         context.user_data["wizard"] = {"kind": "bulk"}
+        logger.info("wizard_start | user=%s | kind=bulk", uid)
         await q.message.reply_text(
             "➕ Bulk client wizard\nStep 1/8: send inbound ID (or type: default).",
             reply_markup=cancel_keyboard(),
@@ -350,6 +444,70 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("Send: <tg_id> <amount>\nExample: 123456 50")
         return
 
+    if data.startswith("wizard:"):
+        action = data.split(":", 1)[1]
+        if action == "cancel":
+            reset_flow(context)
+            context.user_data.pop("promo_discount", None)
+            await q.message.reply_text(
+                "عملیات لغو شد. به منوی اصلی بازگشتید.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await q.message.reply_text("Main menu", reply_markup=main_menu())
+            return
+        if action == "edit":
+            context.user_data["flow"] = "wizard_days"
+            await q.message.reply_text("مرحله ویرایش: تعداد روزها را ارسال کنید.", reply_markup=cancel_keyboard())
+            return
+        if action == "confirm":
+            await finalize_order(update, context, context.user_data.get("wizard", {}))
+            return
+
+    if data.startswith("client_action:"):
+        parts = data.split(":")
+        if len(parts) != 3:
+            await q.message.reply_text("Invalid client action.")
+            return
+        client_id = as_int(parts[1])
+        action = parts[2]
+        if not client_id:
+            await q.message.reply_text("Invalid client.")
+            return
+        client = db.get_client(uid, client_id)
+        if not client:
+            await q.message.reply_text("Client not found.")
+            return
+        if action == "config":
+            await q.message.reply_text(f"🔐 کانفیگ:\n{client['vless_link']}")
+            return
+        if action == "qr":
+            qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={client['vless_link']}"
+            await q.message.reply_photo(qr)
+            return
+        if action == "details":
+            created_at = datetime.fromtimestamp(client["created_at"]).strftime("%Y-%m-%d %H:%M")
+            if client["start_after_first_use"]:
+                expiry_text = "شروع بعد از اولین استفاده"
+            else:
+                expiry_ts = client["created_at"] + client["days"] * 86400
+                expiry_text = datetime.fromtimestamp(expiry_ts).strftime("%Y-%m-%d")
+            await q.message.reply_text(
+                "ℹ️ جزئیات کلاینت\n"
+                f"Remark: {client['email']}\n"
+                f"Inbound: {client['inbound_id']}\n"
+                f"مدت: {client['days']} روز | حجم: {client['gb']} گیگ\n"
+                f"تاریخ ایجاد: {created_at}\n"
+                f"انقضا: {expiry_text}\n"
+                f"تمدید خودکار: {'فعال' if client['auto_renew'] else 'غیرفعال'}"
+            )
+            return
+        if action == "renew":
+            new_value = not bool(client["auto_renew"])
+            db.update_client_auto_renew(uid, client_id, new_value)
+            logger.info("client_auto_renew_toggle | user=%s | client=%s | enabled=%s", uid, client_id, new_value)
+            await q.message.reply_text(f"✅ تمدید خودکار {'فعال شد' if new_value else 'غیرفعال شد'}.")
+            return
+
     if data.startswith("page:"):
         parts = data.split(":")
         if len(parts) < 3:
@@ -369,7 +527,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for c in rows:
                 lines.append(f"• {c['email']} | inbound {c['inbound_id']} | {c['days']}d/{c['gb']}GB")
             await q.message.edit_message_text("\n".join(lines))
-            await q.message.edit_message_reply_markup(build_pagination(total, page, LIST_PAGE_SIZE, "page:clients"))
+            await q.message.edit_message_reply_markup(client_actions_keyboard(rows, total, page))
             return
 
         if page_type == "tx":
@@ -422,7 +580,10 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_cancel(txt):
         reset_flow(context)
         context.user_data.pop("promo_discount", None)
-        await update.message.reply_text("Operation canceled.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(
+            "عملیات لغو شد. به منوی اصلی بازگشتید.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         await update.message.reply_text("Main menu", reply_markup=main_menu())
         return
 
@@ -468,6 +629,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Failed: {exc}")
             return
         reset_flow(context)
+        logger.info("admin_create_inbound | admin=%s | inbound=%s", uid, inbound_id)
         await update.message.reply_text(f"Inbound created with ID: {inbound_id}")
         return
 
@@ -487,6 +649,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.set_setting("price_per_gb", str(pgb))
         db.set_setting("price_per_day", str(pday))
         reset_flow(context)
+        logger.info("admin_set_global_price | admin=%s | ppgb=%s | ppday=%s", uid, pgb, pday)
         await update.message.reply_text("Global pricing updated.")
         return
 
@@ -506,6 +669,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pday = None if parts[3] == "-" else float(parts[3])
         db.set_inbound_rule(iid, bool(en), pgb, pday)
         reset_flow(context)
+        logger.info("admin_set_inbound_rule | admin=%s | inbound=%s | enabled=%s", uid, iid, en)
         await update.message.reply_text("Inbound pricing/enable rule saved.")
         return
 
@@ -529,6 +693,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.ensure_agent(tid, "", "", role="reseller")
         bal = db.add_balance(tid, amount, "topup.admin", meta=f"by:{uid}")
         reset_flow(context)
+        logger.info("admin_charge_wallet | admin=%s | target=%s | amount=%s", uid, tid, amount)
         await update.message.reply_text(f"Wallet updated. New balance: {bal}")
         return
 
@@ -662,16 +827,23 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gross = round(unit * count, 2)
         discount = float(context.user_data.get("promo_discount", 0.0))
         net = round(gross * (1 - discount / 100), 2)
-        context.user_data["flow"] = "wizard_confirm"
-        await update.message.reply_text(wizard_summary(w, gross, discount, net), reply_markup=cancel_keyboard())
+        context.user_data["flow"] = "wizard_preview"
+        await update.message.reply_text(
+            wizard_summary(w, gross, discount, net),
+            parse_mode="HTML",
+            reply_markup=preview_keyboard(),
+        )
         return
 
-    if flow == "wizard_confirm":
+    if flow == "wizard_preview":
         v = txt.lower()
         if v in ["n", "no"]:
             reset_flow(context)
             context.user_data.pop("promo_discount", None)
-            await update.message.reply_text("Order canceled.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text(
+                "عملیات لغو شد. به منوی اصلی بازگشتید.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
             await update.message.reply_text("Main menu", reply_markup=main_menu())
             return
         if v not in ["y", "yes"]:
@@ -684,6 +856,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: Dict):
+    effective_message = update.effective_message
     uid = update.effective_user.id
     count = 1 if w["kind"] == "single" else w["count"]
     unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
@@ -696,7 +869,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
         reset_flow(context)
-        await update.message.reply_text(
+        await effective_message.reply_text(
             "Your reseller account is disabled. Contact admin.",
             reply_markup=ReplyKeyboardRemove(),
         )
@@ -704,9 +877,10 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
     try:
         db.deduct_balance(uid, net, "order.charge", json.dumps({"kind": w["kind"], "inbound": w["inbound_id"]}))
+        logger.info("order_deduct | user=%s | amount=%s | kind=%s", uid, net, w["kind"])
     except ValueError:
         reset_flow(context)
-        await update.message.reply_text(
+        await effective_message.reply_text(
             f"Insufficient balance. Required: {net}",
             reply_markup=ReplyKeyboardRemove(),
         )
@@ -718,6 +892,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
     try:
         api.login()
+        logger.info("api_login | user=%s", uid)
         inbound = api.get_inbound(w["inbound_id"])
         clients = []
 
@@ -783,11 +958,13 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
         api.add_clients(w["inbound_id"], clients)
         db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "success")
+        logger.info("order_success | user=%s | inbound=%s | count=%s", uid, w["inbound_id"], count)
     except Exception as exc:
         db.add_balance(uid, net, "order.refund", str(exc))
         db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
+        logger.error("order_failed | user=%s | error=%s", uid, exc)
         reset_flow(context)
-        await update.message.reply_text(
+        await effective_message.reply_text(
             "⚠️ We couldn't create the client(s) right now. Your balance was refunded. Please try again later.",
             reply_markup=ReplyKeyboardRemove(),
         )
@@ -801,17 +978,23 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
     configs = "\n".join(links)
-    message = f"{summary}\n\nConfigs:\n{configs}" if configs else summary
-    if len(message) <= 4000:
-        await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    message_text = f"{summary}\n\nConfigs:\n{configs}" if configs else summary
+    if len(message_text) <= 4000:
+        await update.effective_message.reply_text(message_text, reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text(summary, reply_markup=ReplyKeyboardRemove())
+        await update.effective_message.reply_text(summary, reply_markup=ReplyKeyboardRemove())
         await send_links(update, links)
 
     # QR preview for single client
     if len(links) == 1:
         qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={links[0]}"
-        await update.message.reply_photo(qr)
+        await update.effective_message.reply_photo(qr)
+
+    if bal < LOW_BALANCE_THRESHOLD:
+        await update.effective_message.reply_text(
+            "⚠️ موجودی شما کم است. برای جلوگیری از خطا، کیف پول را شارژ کنید.",
+            reply_markup=low_balance_keyboard(),
+        )
 
     reset_flow(context)
 

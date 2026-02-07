@@ -124,6 +124,7 @@ def init_db() -> None:
             "price_per_gb": "0.15",
             "price_per_day": "0.10",
             "support_text": "Contact admin for support.",
+            "low_balance_threshold": "50",
         }
         for k, v in defaults.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (k, v))
@@ -132,7 +133,7 @@ def init_db() -> None:
 def get_setting_float(key: str) -> float:
     with get_conn() as conn:
         r = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    return float(r["value"])
+    return float(r["value"]) if r else 0.0
 
 
 def get_setting_text(key: str) -> str:
@@ -309,6 +310,22 @@ def list_clients_paged(tg_id: int, limit: int, offset: int) -> List[sqlite3.Row]
             "SELECT * FROM created_clients WHERE tg_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
             (tg_id, limit, offset),
         ).fetchall()
+
+
+def get_client(tg_id: int, client_id: int) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM created_clients WHERE tg_id=? AND id=?",
+            (tg_id, client_id),
+        ).fetchone()
+
+
+def update_client_auto_renew(tg_id: int, client_id: int, enabled: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE created_clients SET auto_renew=? WHERE tg_id=? AND id=?",
+            (1 if enabled else 0, tg_id, client_id),
+        )
 
 
 def agent_stats(tg_id: int) -> Dict[str, float]:
