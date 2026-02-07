@@ -175,6 +175,12 @@ def list_resellers(limit: int = 200) -> List[sqlite3.Row]:
         return conn.execute("SELECT * FROM agents WHERE role='reseller' ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
 
 
+def count_resellers() -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) c FROM agents WHERE role='reseller'").fetchone()
+    return int(row["c"] if row else 0)
+
+
 def set_agent_active(tg_id: int, active: bool) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE agents SET is_active=?, updated_at=? WHERE tg_id=?", (1 if active else 0, now_ts(), tg_id))
@@ -285,6 +291,12 @@ def list_clients(tg_id: int, limit: int = 30) -> List[sqlite3.Row]:
         return conn.execute("SELECT * FROM created_clients WHERE tg_id=? ORDER BY id DESC LIMIT ?", (tg_id, limit)).fetchall()
 
 
+def count_all_clients() -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) c FROM created_clients").fetchone()
+    return int(row["c"] if row else 0)
+
+
 def count_clients(tg_id: int) -> int:
     with get_conn() as conn:
         row = conn.execute("SELECT COUNT(*) c FROM created_clients WHERE tg_id=?", (tg_id,)).fetchone()
@@ -384,6 +396,88 @@ def top_agents(limit: int = 100) -> List[sqlite3.Row]:
             """,
             (limit,),
         ).fetchall()
+
+
+def total_revenue() -> float:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(-amount),0) r FROM wallet_ledger WHERE amount < 0 AND reason LIKE 'order.%'"
+        ).fetchone()
+    return float(row["r"] if row else 0)
+
+
+def top_resellers_by_revenue(limit: int = 5) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.tg_id, a.username, a.full_name,
+                   COALESCE(SUM(o.net_price),0) revenue,
+                   COALESCE(SUM(o.count),0) clients
+            FROM agents a
+            LEFT JOIN orders o ON o.tg_id=a.tg_id AND o.status='success'
+            WHERE a.role='reseller'
+            GROUP BY a.tg_id
+            ORDER BY revenue DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def top_resellers_by_clients(limit: int = 5) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.tg_id, a.username, a.full_name,
+                   COALESCE(SUM(o.count),0) clients,
+                   COALESCE(SUM(o.net_price),0) revenue
+            FROM agents a
+            LEFT JOIN orders o ON o.tg_id=a.tg_id AND o.status='success'
+            WHERE a.role='reseller'
+            GROUP BY a.tg_id
+            ORDER BY clients DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def sales_by_day(days: int = 14) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT strftime('%Y-%m-%d', datetime(created_at, 'unixepoch')) as day,
+                   COALESCE(SUM(net_price),0) revenue
+            FROM orders
+            WHERE status='success' AND created_at >= ?
+            GROUP BY day
+            ORDER BY day DESC
+            LIMIT ?
+            """,
+            (now_ts() - days * 86400, days),
+        ).fetchall()
+
+
+def sales_by_month(months: int = 6) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT strftime('%Y-%m', datetime(created_at, 'unixepoch')) as month,
+                   COALESCE(SUM(net_price),0) revenue
+            FROM orders
+            WHERE status='success'
+            GROUP BY month
+            ORDER BY month DESC
+            LIMIT ?
+            """,
+            (months,),
+        ).fetchall()
+
+
+def get_all_user_ids() -> List[int]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT tg_id FROM agents WHERE is_active=1").fetchall()
+    return [int(r["tg_id"]) for r in rows]
 
 
 def list_promos() -> List[sqlite3.Row]:
