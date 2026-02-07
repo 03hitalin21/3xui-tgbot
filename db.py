@@ -222,6 +222,20 @@ def list_transactions(tg_id: int, limit: int = 20) -> List[sqlite3.Row]:
         ).fetchall()
 
 
+def count_transactions(tg_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) c FROM wallet_ledger WHERE tg_id=?", (tg_id,)).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def list_transactions_paged(tg_id: int, limit: int, offset: int) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM wallet_ledger WHERE tg_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (tg_id, limit, offset),
+        ).fetchall()
+
+
 def create_order(
     tg_id: int,
     inbound_id: int,
@@ -269,6 +283,20 @@ def save_created_client(
 def list_clients(tg_id: int, limit: int = 30) -> List[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute("SELECT * FROM created_clients WHERE tg_id=? ORDER BY id DESC LIMIT ?", (tg_id, limit)).fetchall()
+
+
+def count_clients(tg_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) c FROM created_clients WHERE tg_id=?", (tg_id,)).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def list_clients_paged(tg_id: int, limit: int, offset: int) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM created_clients WHERE tg_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (tg_id, limit, offset),
+        ).fetchall()
 
 
 def agent_stats(tg_id: int) -> Dict[str, float]:

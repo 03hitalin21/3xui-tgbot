@@ -17,6 +17,7 @@ MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
 MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
 MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
 MAX_LINKS_PER_MESSAGE = 10
+LIST_PAGE_SIZE = 10
 
 
 @dataclass
@@ -102,6 +103,41 @@ async def send_links(update: Update, links: List[str]) -> None:
         await update.message.reply_text("\n".join(links[i:i + MAX_LINKS_PER_MESSAGE]))
 
 
+def build_pagination(total_items: int, current_page: int, items_per_page: int, callback_prefix: str) -> InlineKeyboardMarkup:
+    total_pages = max((total_items - 1) // items_per_page + 1, 1)
+    page = max(1, min(current_page, total_pages))
+    buttons = []
+
+    if page > 1:
+        buttons.append(InlineKeyboardButton("«", callback_data=f"{callback_prefix}:1"))
+        buttons.append(InlineKeyboardButton("‹", callback_data=f"{callback_prefix}:{page - 1}"))
+    else:
+        buttons.append(InlineKeyboardButton("«", callback_data=f"{callback_prefix}:1"))
+        buttons.append(InlineKeyboardButton("‹", callback_data=f"{callback_prefix}:1"))
+
+    start = max(1, page - 1)
+    end = min(total_pages, page + 1)
+    for p in range(start, end + 1):
+        label = f"- {p} -" if p == page else str(p)
+        buttons.append(InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{p}"))
+
+    if page < total_pages:
+        buttons.append(InlineKeyboardButton("›", callback_data=f"{callback_prefix}:{page + 1}"))
+        buttons.append(InlineKeyboardButton("»", callback_data=f"{callback_prefix}:{total_pages}"))
+    else:
+        buttons.append(InlineKeyboardButton("›", callback_data=f"{callback_prefix}:{total_pages}"))
+        buttons.append(InlineKeyboardButton("»", callback_data=f"{callback_prefix}:{total_pages}"))
+
+    return InlineKeyboardMarkup([buttons])
+
+
+def page_bounds(total_items: int, page: int, per_page: int) -> tuple[int, int, int]:
+    total_pages = max((total_items - 1) // per_page + 1, 1)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * per_page
+    return page, offset, total_pages
+
+
 def inbound_price(inbound_id: int, days: int, gb: int) -> float:
     rule = db.inbound_rule(inbound_id)
     if rule and int(rule["enabled"]) == 0:
@@ -162,14 +198,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "menu:my_clients":
-        rows = db.list_clients(uid, limit=20)
-        if not rows:
+        total = db.count_clients(uid)
+        if total == 0:
             await q.message.reply_text("No clients yet.")
             return
-        lines = ["👤 Your recent clients:"]
+        page, offset, total_pages = page_bounds(total, 1, LIST_PAGE_SIZE)
+        rows = db.list_clients_paged(uid, LIST_PAGE_SIZE, offset)
+        lines = [f"👤 Your clients (page {page}/{total_pages}):"]
         for c in rows:
             lines.append(f"• {c['email']} | inbound {c['inbound_id']} | {c['days']}d/{c['gb']}GB")
-        await q.message.reply_text("\n".join(lines[:40]))
+        await q.message.reply_text("\n".join(lines), reply_markup=build_pagination(total, page, LIST_PAGE_SIZE, "page:clients"))
         return
 
     if data == "menu:create_client":
@@ -187,13 +225,18 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not ins:
             await q.message.reply_text("No inbounds found.")
             return
-        lines = ["🌐 Inbounds:"]
-        for i in ins[:40]:
+        total = len(ins)
+        if total == 0:
+            await q.message.reply_text("No inbounds found.")
+            return
+        page, offset, total_pages = page_bounds(total, 1, LIST_PAGE_SIZE)
+        lines = [f"🌐 Inbounds (page {page}/{total_pages}):"]
+        for i in ins[offset:offset + LIST_PAGE_SIZE]:
             rid = i.get("id")
             remark = i.get("remark", "-")
             port = i.get("port", "-")
             lines.append(f"• ID {rid} | {remark} | port {port}")
-        await q.message.reply_text("\n".join(lines))
+        await q.message.reply_text("\n".join(lines), reply_markup=build_pagination(total, page, LIST_PAGE_SIZE, "page:inbounds"))
         return
 
     if data == "menu:wallet":
@@ -202,14 +245,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "menu:tx":
-        tx = db.list_transactions(uid, limit=15)
-        if not tx:
+        total = db.count_transactions(uid)
+        if total == 0:
             await q.message.reply_text("No transactions yet.")
             return
-        lines = ["📄 Last transactions:"]
+        page, offset, total_pages = page_bounds(total, 1, LIST_PAGE_SIZE)
+        tx = db.list_transactions_paged(uid, LIST_PAGE_SIZE, offset)
+        lines = [f"📄 Transactions (page {page}/{total_pages}):"]
         for t in tx:
             lines.append(f"• {t['amount']} | {t['reason']} | {time.strftime('%Y-%m-%d %H:%M', time.localtime(t['created_at']))}")
-        await q.message.reply_text("\n".join(lines))
+        await q.message.reply_text("\n".join(lines), reply_markup=build_pagination(total, page, LIST_PAGE_SIZE, "page:tx"))
         return
 
     if data == "menu:support":
@@ -272,6 +317,65 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["flow"] = "admin_charge_wallet"
             await q.message.reply_text("Send: <tg_id> <amount>\nExample: 123456 50")
         return
+
+    if data.startswith("page:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            await q.message.reply_text("Invalid page request.")
+            return
+        page_type = parts[1]
+        page_num = as_int(parts[2]) or 1
+
+        if page_type == "clients":
+            total = db.count_clients(uid)
+            if total == 0:
+                await q.message.edit_message_text("No clients yet.")
+                return
+            page, offset, total_pages = page_bounds(total, page_num, LIST_PAGE_SIZE)
+            rows = db.list_clients_paged(uid, LIST_PAGE_SIZE, offset)
+            lines = [f"👤 Your clients (page {page}/{total_pages}):"]
+            for c in rows:
+                lines.append(f"• {c['email']} | inbound {c['inbound_id']} | {c['days']}d/{c['gb']}GB")
+            await q.message.edit_message_text("\n".join(lines))
+            await q.message.edit_message_reply_markup(build_pagination(total, page, LIST_PAGE_SIZE, "page:clients"))
+            return
+
+        if page_type == "tx":
+            total = db.count_transactions(uid)
+            if total == 0:
+                await q.message.edit_message_text("No transactions yet.")
+                return
+            page, offset, total_pages = page_bounds(total, page_num, LIST_PAGE_SIZE)
+            rows = db.list_transactions_paged(uid, LIST_PAGE_SIZE, offset)
+            lines = [f"📄 Transactions (page {page}/{total_pages}):"]
+            for t in rows:
+                lines.append(f"• {t['amount']} | {t['reason']} | {time.strftime('%Y-%m-%d %H:%M', time.localtime(t['created_at']))}")
+            await q.message.edit_message_text("\n".join(lines))
+            await q.message.edit_message_reply_markup(build_pagination(total, page, LIST_PAGE_SIZE, "page:tx"))
+            return
+
+        if page_type == "inbounds":
+            api = XUIApi()
+            try:
+                api.login()
+                ins = api.list_inbounds()
+            except Exception as exc:
+                await q.message.edit_message_text(f"Panel error: {exc}")
+                return
+            total = len(ins)
+            if total == 0:
+                await q.message.edit_message_text("No inbounds found.")
+                return
+            page, offset, total_pages = page_bounds(total, page_num, LIST_PAGE_SIZE)
+            lines = [f"🌐 Inbounds (page {page}/{total_pages}):"]
+            for i in ins[offset:offset + LIST_PAGE_SIZE]:
+                rid = i.get("id")
+                remark = i.get("remark", "-")
+                port = i.get("port", "-")
+                lines.append(f"• ID {rid} | {remark} | port {port}")
+            await q.message.edit_message_text("\n".join(lines))
+            await q.message.edit_message_reply_markup(build_pagination(total, page, LIST_PAGE_SIZE, "page:inbounds"))
+            return
 
     await q.message.reply_text("Unknown action.")
 
