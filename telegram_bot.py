@@ -711,6 +711,11 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
     except Exception as exc:
         db.add_balance(uid, net, "order.refund", str(exc))
         db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
+        await send_notification(
+            context,
+            uid,
+            f"❌ <b>Creation failed</b>\nRefunded: {net}\nReason: {exc}",
+        )
         reset_flow(context)
         await update.message.reply_text(f"Panel/API error. Refunded. Details: {exc}")
         return
