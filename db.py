@@ -312,6 +312,133 @@ def list_clients_paged(tg_id: int, limit: int, offset: int) -> List[sqlite3.Row]
         ).fetchall()
 
 
+def list_agents(limit: int = 50) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            ORDER BY a.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def search_agents(query: str, limit: int = 50) -> List[sqlite3.Row]:
+    pattern = f"%{query}%"
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            WHERE a.username LIKE ?
+               OR CAST(a.tg_id AS TEXT) LIKE ?
+               OR a.role LIKE ?
+            ORDER BY a.created_at DESC
+            LIMIT ?
+            """,
+            (pattern, pattern, pattern, limit),
+        ).fetchall()
+
+
+def get_agent_with_client_count(tg_id: int) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT a.*,
+                   COALESCE(c.client_count, 0) client_count
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) c ON c.tg_id = a.tg_id
+            WHERE a.tg_id=?
+            """,
+            (tg_id,),
+        ).fetchone()
+
+
+def manual_adjust_balance(tg_id: int, amount: float, reason: str, admin_note: str = "") -> float:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET balance=balance+?, updated_at=? WHERE tg_id=?",
+            (amount, now_ts(), tg_id),
+        )
+        conn.execute(
+            "INSERT INTO wallet_ledger(tg_id, amount, reason, meta, created_at) VALUES(?,?,?,?,?)",
+            (tg_id, amount, reason, admin_note, now_ts()),
+        )
+        row = conn.execute("SELECT balance FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+        return float(row["balance"] if row else 0)
+
+
+def iter_transactions_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT w.id, w.tg_id, a.username, w.amount, w.reason, w.meta, w.created_at
+            FROM wallet_ledger w
+            LEFT JOIN agents a ON a.tg_id = w.tg_id
+            ORDER BY w.id DESC
+            """
+        ):
+            yield row
+
+
+def iter_clients_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT c.tg_id, a.username, c.email, c.uuid, c.gb, c.days, c.created_at
+            FROM created_clients c
+            LEFT JOIN agents a ON a.tg_id = c.tg_id
+            ORDER BY c.id DESC
+            """
+        ):
+            yield row
+
+
+def iter_agents_export():
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT a.username,
+                   a.tg_id,
+                   a.balance,
+                   COALESCE(cc.client_count, 0) AS client_count,
+                   COALESCE(o.total_revenue, 0) AS total_revenue
+            FROM agents a
+            LEFT JOIN (
+                SELECT tg_id, COUNT(*) AS client_count
+                FROM created_clients
+                GROUP BY tg_id
+            ) cc ON cc.tg_id = a.tg_id
+            LEFT JOIN (
+                SELECT tg_id, COALESCE(SUM(net_price), 0) AS total_revenue
+                FROM orders
+                WHERE status='success'
+                GROUP BY tg_id
+            ) o ON o.tg_id = a.tg_id
+            ORDER BY total_revenue DESC
+            """
+        ):
+            yield row
+
+
 def get_client(tg_id: int, client_id: int) -> Optional[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
