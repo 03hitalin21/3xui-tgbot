@@ -2,7 +2,10 @@ import asyncio
 import csv
 import io
 import os
+import secrets
+import string
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Iterable, List, Sequence
 
@@ -35,6 +38,12 @@ def _csv_file_response(filename: str, headers: Sequence[str], rows: Iterable[Seq
     wrapper.flush()
     temp.seek(0)
     return send_file(temp, mimetype="text/csv", as_attachment=True, download_name=filename)
+
+
+def _generate_promo_code(prefix: str, length: int = 10) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    random_part = "".join(secrets.choice(alphabet) for _ in range(length))
+    return f"{prefix}{random_part}".upper()
 
 
 BASE_STYLE = """
@@ -71,6 +80,7 @@ INDEX = """
   <h3>Quick links</h3>
   <a href='/dashboard?token={{token}}'>Dashboard</a> |
   <a href='/admin/users?token={{token}}'>Users/Agents</a> |
+  <a href='/admin/promos/bulk-generate?token={{token}}'>Bulk Promos</a> |
   <a href='/?token={{token}}'>Pricing/Promos</a> |
   <a href='/broadcast?token={{token}}'>Broadcast</a>
 </div>
@@ -142,6 +152,10 @@ DASHBOARD = """
   <a href='/admin/export/transactions.csv?token={{token}}'>Transactions CSV</a> |
   <a href='/admin/export/clients.csv?token={{token}}'>Clients CSV</a> |
   <a href='/admin/export/agents.csv?token={{token}}'>Agents CSV</a>
+</div>
+<div class='card'>
+  <h3>Promotions</h3>
+  <a href='/admin/promos/bulk-generate?token={{token}}'>Bulk promo generator</a>
 </div>
 <div class='card grid'>
   <div class='pill'>Resellers<br><b>{{resellers}}</b></div>
@@ -282,6 +296,50 @@ USER_DETAIL = """
 """
 
 
+BULK_PROMOS = """
+<!doctype html>
+<title>Bulk Promo Generator</title>
+{{style}}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class='card'>
+      {% for category, message in messages %}
+        <div class='flash {{category}}'>{{message}}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+<h1>Bulk Promo Code Generator</h1>
+<div class='card'>
+  <a href='/dashboard?token={{token}}'>Back</a>
+</div>
+<div class='card'>
+  <form method='post' action='/admin/promos/bulk-generate'>
+    <input type='hidden' name='token' value='{{token}}'>
+    Quantity (1-1000): <input name='quantity' value='{{form.quantity}}'>
+    Discount type:
+    <select name='discount_type'>
+      <option value='percent' {% if form.discount_type == 'percent' %}selected{% endif %}>Percentage</option>
+      <option value='gb_free' {% if form.discount_type == 'gb_free' %}selected{% endif %}>Free GB</option>
+      <option value='fixed_amount' {% if form.discount_type == 'fixed_amount' %}selected{% endif %}>Fixed amount</option>
+    </select>
+    Value: <input name='value' value='{{form.value}}'>
+    Usage limit per code (0 = unlimited): <input name='max_uses' value='{{form.max_uses}}'>
+    Expiry days (blank = no expiry): <input name='expiry_days' value='{{form.expiry_days}}'>
+    Optional prefix: <input name='prefix' value='{{form.prefix}}' placeholder='SPRING25-'>
+    <button name='action' value='generate'>Generate</button>
+    <button name='action' value='download'>Generate & Download CSV</button>
+  </form>
+</div>
+{% if codes %}
+<div class='card'>
+  <h3>Generated {{codes|length}} codes</h3>
+  <textarea rows='10' readonly>{% for c in codes %}{{c}}\n{% endfor %}</textarea>
+</div>
+{% endif %}
+"""
+
+
 BROADCAST = """
 <!doctype html>
 <title>Broadcast</title>
@@ -368,6 +426,118 @@ def admin_users():
         token=request.args.get("token"),
         search=search,
         users=formatted,
+    )
+
+
+@app.route("/admin/promos/bulk-generate", methods=["GET", "POST"])
+def bulk_generate_promos():
+    if not auth_ok(request):
+        return "Forbidden. Provide ?token=ADMIN_WEB_TOKEN", 403
+    form = {
+        "quantity": request.form.get("quantity", "50"),
+        "discount_type": request.form.get("discount_type", "percent"),
+        "value": request.form.get("value", ""),
+        "max_uses": request.form.get("max_uses", "1"),
+        "expiry_days": request.form.get("expiry_days", ""),
+        "prefix": request.form.get("prefix", ""),
+    }
+    codes: List[str] = []
+    if request.method == "POST":
+        try:
+            quantity = int(form["quantity"])
+            if quantity < 1 or quantity > 1000:
+                raise ValueError("Quantity must be between 1 and 1000.")
+            value = float(form["value"])
+            if value <= 0:
+                raise ValueError("Value must be greater than 0.")
+            max_uses = int(form["max_uses"])
+            if max_uses < 0:
+                raise ValueError("Usage limit must be 0 or greater.")
+            expiry_days = form["expiry_days"].strip()
+            expires_at = None
+            if expiry_days:
+                days_val = int(expiry_days)
+                if days_val <= 0:
+                    raise ValueError("Expiry days must be greater than 0.")
+                expires_at = int(time.time() + days_val * 86400)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template_string(
+                BULK_PROMOS,
+                style=BASE_STYLE,
+                token=request.args.get("token") or request.form.get("token"),
+                form=form,
+                codes=codes,
+            )
+
+        prefix = form["prefix"].strip().upper()
+        generated = set()
+        attempts = 0
+        while len(generated) < quantity and attempts < quantity * 20:
+            attempts += 1
+            code = _generate_promo_code(prefix)
+            if code in generated:
+                continue
+            if db.promo_code_exists(code):
+                continue
+            generated.add(code)
+
+        if len(generated) < quantity:
+            flash("Unable to generate enough unique codes. Please try again.", "error")
+            return render_template_string(
+                BULK_PROMOS,
+                style=BASE_STYLE,
+                token=request.args.get("token") or request.form.get("token"),
+                form=form,
+                codes=sorted(generated),
+            )
+
+        discount_type = form["discount_type"]
+        discount_percent = value if discount_type == "percent" else 0
+        max_uses_value = None if max_uses == 0 else max_uses
+        created_at = int(time.time())
+        created_by = None
+
+        rows = []
+        for code in generated:
+            rows.append(
+                {
+                    "code": code,
+                    "discount_percent": discount_percent,
+                    "discount_type": discount_type,
+                    "value": value,
+                    "max_uses": max_uses_value,
+                    "used_count": 0,
+                    "active": 1,
+                    "expires_at": expires_at,
+                    "created_at": created_at,
+                    "created_by": created_by,
+                }
+            )
+        db.insert_promo_batch(rows)
+        codes = sorted(generated)
+        flash(f"Generated {len(codes)} codes.", "success")
+
+        if request.form.get("action") == "download":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["code", "discount_type", "value", "max_uses", "expires_at"])
+            for code in codes:
+                writer.writerow([code, discount_type, value, max_uses_value, expires_at])
+            output.seek(0)
+            return send_file(
+                io.BytesIO(output.getvalue().encode("utf-8")),
+                mimetype="text/csv",
+                as_attachment=True,
+                download_name="bulk_promos.csv",
+            )
+
+    return render_template_string(
+        BULK_PROMOS,
+        style=BASE_STYLE,
+        token=request.args.get("token") or request.form.get("token"),
+        form=form,
+        codes=codes,
     )
 
 

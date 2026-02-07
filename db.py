@@ -55,10 +55,14 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS promo_codes (
                 code TEXT PRIMARY KEY,
                 discount_percent REAL NOT NULL,
+                discount_type TEXT NOT NULL DEFAULT 'percent',
+                value REAL,
                 max_uses INTEGER,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
-                created_at INTEGER NOT NULL
+                expires_at INTEGER,
+                created_at INTEGER NOT NULL,
+                created_by INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS promo_redemptions (
@@ -122,6 +126,10 @@ def init_db() -> None:
         _ensure_column(conn, "agents", "is_active", "is_active INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "agents", "referral_code", "referral_code TEXT")
         _ensure_column(conn, "agents", "referred_by", "referred_by INTEGER")
+        _ensure_column(conn, "promo_codes", "discount_type", "discount_type TEXT NOT NULL DEFAULT 'percent'")
+        _ensure_column(conn, "promo_codes", "value", "value REAL")
+        _ensure_column(conn, "promo_codes", "expires_at", "expires_at INTEGER")
+        _ensure_column(conn, "promo_codes", "created_by", "created_by INTEGER")
         _ensure_column(conn, "created_clients", "auto_renew", "auto_renew INTEGER NOT NULL DEFAULT 0")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_referral_code ON agents(referral_code)")
 
@@ -633,9 +641,57 @@ def inbound_rule(inbound_id: int) -> Optional[sqlite3.Row]:
 def create_promo(code: str, discount_percent: float, max_uses: Optional[int]) -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO promo_codes(code, discount_percent, max_uses, created_at) VALUES(?,?,?,?)",
-            (code.upper(), discount_percent, max_uses, now_ts()),
+            """
+            INSERT INTO promo_codes(code, discount_percent, discount_type, value, max_uses, created_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (code.upper(), discount_percent, "percent", discount_percent, max_uses, now_ts()),
         )
+
+
+def promo_code_exists(code: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute("SELECT 1 FROM promo_codes WHERE code=?", (code,)).fetchone()
+    return row is not None
+
+
+def insert_promo_batch(rows: List[Dict]) -> int:
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """
+            INSERT INTO promo_codes(
+                code,
+                discount_percent,
+                discount_type,
+                value,
+                max_uses,
+                used_count,
+                active,
+                expires_at,
+                created_at,
+                created_by
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                (
+                    r["code"],
+                    r["discount_percent"],
+                    r["discount_type"],
+                    r["value"],
+                    r["max_uses"],
+                    r["used_count"],
+                    r["active"],
+                    r["expires_at"],
+                    r["created_at"],
+                    r["created_by"],
+                )
+                for r in rows
+            ],
+        )
+    return len(rows)
 
 
 def apply_promo(code: str, tg_id: int) -> float:
