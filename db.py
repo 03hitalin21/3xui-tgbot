@@ -624,6 +624,30 @@ def get_all_user_ids() -> List[int]:
     return [int(r["tg_id"]) for r in rows]
 
 
+def count_broadcast_targets(target: str) -> int:
+    if target == "agents":
+        query = "SELECT COUNT(*) c FROM agents WHERE is_active=1 AND role IN ('reseller','agent')"
+        params = ()
+    else:
+        query = "SELECT COUNT(*) c FROM agents WHERE is_active=1"
+        params = ()
+    with get_conn() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def list_broadcast_target_ids(target: str) -> List[int]:
+    if target == "agents":
+        query = "SELECT tg_id FROM agents WHERE is_active=1 AND role IN ('reseller','agent')"
+        params = ()
+    else:
+        query = "SELECT tg_id FROM agents WHERE is_active=1"
+        params = ()
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [int(r["tg_id"]) for r in rows]
+
+
 def list_promos() -> List[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute("SELECT * FROM promo_codes ORDER BY created_at DESC").fetchall()

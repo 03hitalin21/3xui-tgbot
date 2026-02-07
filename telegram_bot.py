@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import db
 from xui_api import XUIApi, vless_link
@@ -27,6 +27,9 @@ REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 WIZARD_RATE_LIMIT = 5
 WIZARD_RATE_WINDOW = 600
 WIZARD_STARTS: Dict[int, List[float]] = {}
+BROADCAST_CHOOSE_TARGET = 1
+BROADCAST_SEND_MESSAGE = 2
+BROADCAST_PREVIEW_CONFIRM = 3
 
 
 logging.basicConfig(
@@ -114,6 +117,29 @@ def low_balance_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("شارژ کیف پول", callback_data="menu:wallet")],
             [InlineKeyboardButton("پشتیبانی", callback_data="menu:support")],
             [InlineKeyboardButton("ادامه", callback_data="menu:home")],
+        ]
+    )
+
+
+def broadcast_target_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("All users", callback_data="broadcast:target:all"),
+                InlineKeyboardButton("Only agents", callback_data="broadcast:target:agents"),
+            ]
+        ]
+    )
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data="broadcast:confirm"),
+                InlineKeyboardButton("✏️ Edit", callback_data="broadcast:edit"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="broadcast:cancel")],
         ]
     )
 
@@ -1023,6 +1049,126 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Top-up ok. Balance: {bal}")
 
 
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("Only admin can use this command.")
+        return ConversationHandler.END
+    context.user_data.pop("broadcast", None)
+    await update.effective_message.reply_text(
+        "Send to: All users / Only agents?",
+        reply_markup=broadcast_target_keyboard(),
+    )
+    return BROADCAST_CHOOSE_TARGET
+
+
+async def choose_broadcast_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split(":")[-1]
+    if data not in {"all", "agents"}:
+        await query.edit_message_text("Invalid target. Use /broadcast again.")
+        return ConversationHandler.END
+    context.user_data["broadcast"] = {
+        "target": data,
+    }
+    await query.edit_message_text(
+        "Now send the message you want to broadcast (text, photo, document allowed). Use /cancel to stop."
+    )
+    return BROADCAST_SEND_MESSAGE
+
+
+async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    message = update.effective_message
+    if message.text and is_cancel(message.text):
+        await message.reply_text("Broadcast canceled.")
+        return ConversationHandler.END
+
+    broadcast = context.user_data.get("broadcast") or {}
+    broadcast["source_chat_id"] = message.chat_id
+    broadcast["source_message_id"] = message.message_id
+    if message.text:
+        broadcast["preview_text"] = message.text
+    else:
+        broadcast["preview_text"] = message.caption or "[Media message]"
+    context.user_data["broadcast"] = broadcast
+
+    target = broadcast.get("target", "all")
+    target_title = "all users" if target == "all" else "agents"
+    count = db.count_broadcast_targets(target)
+
+    if message.text is None:
+        await context.bot.copy_message(
+            chat_id=message.chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+        )
+        preview_message = (
+            "Broadcast preview:\n\n"
+            f"[Media preview above]\n\n"
+            f"To: {count} {target_title}\nConfirm?"
+        )
+    else:
+        preview_message = (
+            "Broadcast preview:\n\n"
+            f"{broadcast['preview_text']}\n\n"
+            f"To: {count} {target_title}\nConfirm?"
+        )
+
+    await message.reply_text(preview_message, reply_markup=broadcast_confirm_keyboard())
+    return BROADCAST_PREVIEW_CONFIRM
+
+
+async def broadcast_preview_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":")[-1]
+    if action == "edit":
+        await query.edit_message_text(
+            "Send the updated message you want to broadcast (text, photo, document allowed). Use /cancel to stop."
+        )
+        return BROADCAST_SEND_MESSAGE
+    if action == "cancel":
+        await query.edit_message_text("Broadcast canceled.")
+        return ConversationHandler.END
+    if action != "confirm":
+        await query.edit_message_text("Invalid action.")
+        return ConversationHandler.END
+
+    broadcast = context.user_data.get("broadcast") or {}
+    target = broadcast.get("target", "all")
+    ids = db.list_broadcast_target_ids(target)
+    ids = [uid for uid in ids if uid != ADMIN_TELEGRAM_ID]
+
+    sent = 0
+    failed = 0
+    for uid in ids:
+        try:
+            await context.bot.copy_message(
+                chat_id=uid,
+                from_chat_id=broadcast.get("source_chat_id"),
+                message_id=broadcast.get("source_message_id"),
+            )
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("broadcast_failed | user=%s | error=%s", uid, exc)
+    logger.info("broadcast_complete | target=%s | sent=%s | failed=%s", target, sent, failed)
+    await query.edit_message_text(f"Broadcast sent to {sent}/{sent + failed} users successfully.")
+    return ConversationHandler.END
+
+
+async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("Broadcast canceled.")
+    return ConversationHandler.END
+
+
 def main() -> None:
     db.init_db()
     missing = required_missing()
@@ -1030,11 +1176,27 @@ def main() -> None:
         raise RuntimeError(f"Missing env vars: {missing}")
 
     app = Application.builder().token(BOT_TOKEN).build()
+    broadcast_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", start_broadcast)],
+        states={
+            BROADCAST_CHOOSE_TARGET: [
+                CallbackQueryHandler(choose_broadcast_target, pattern="^broadcast:target:(all|agents)$")
+            ],
+            BROADCAST_SEND_MESSAGE: [
+                MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, receive_broadcast_message)
+            ],
+            BROADCAST_PREVIEW_CONFIRM: [
+                CallbackQueryHandler(broadcast_preview_action, pattern="^broadcast:(confirm|edit|cancel)$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("topup", topup))
+    app.add_handler(broadcast_conv_handler)
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_flow))
     app.run_polling()
