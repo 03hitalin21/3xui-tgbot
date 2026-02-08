@@ -14,7 +14,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import db
-from xui_api import XUIApi, vless_link
+from xui_api import XUIApi, subscription_link, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
@@ -26,6 +26,7 @@ MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
 CANCEL_OPTIONS = {"cancel", "لغو"}
 REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+SUB_ID_ALPHABET = string.ascii_lowercase + string.digits
 WIZARD_RATE_LIMIT = 5
 WIZARD_RATE_WINDOW = 600
 WIZARD_STARTS: Dict[int, List[float]] = {}
@@ -71,6 +72,10 @@ def get_user_role(tg_id: int) -> str:
 def generate_referral_code(length: int = 8) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def generate_sub_id(length: int = 16) -> str:
+    return "".join(secrets.choice(SUB_ID_ALPHABET) for _ in range(length))
 
 
 def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -552,6 +557,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ℹ️ جزئیات کلاینت\n"
                 f"Remark: {client['email']}\n"
                 f"Inbound: {client['inbound_id']}\n"
+                f"Subscription: {client['subscription_link']}\n"
                 f"مدت: {client['days']} روز | حجم: {client['gb']} گیگ\n"
                 f"تاریخ ایجاد: {created_at}\n"
                 f"انقضا: {expiry_text}\n"
@@ -947,6 +953,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
     api = XUIApi()
     links: List[str] = []
+    subscription_links: List[str] = []
     expiry = expiry_value(w["days"], w["start_after_first_use"])
 
     try:
@@ -958,6 +965,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         if w["kind"] == "single":
             uidc = str(uuid.uuid4())
             email = w["remark"]
+            sub_id = generate_sub_id()
+            sub_link = subscription_link(sub_id)
             clients.append({
                 "id": uidc,
                 "email": email,
@@ -967,18 +976,21 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                 "flow": "",
                 "limitIp": 0,
                 "tgId": str(uid),
-                "subId": "",
+                "subId": sub_id,
                 "comment": "tg",
                 "reset": reset_days,
             })
             link = vless_link(uidc, inbound, email)
             links.append(link)
+            subscription_links.append(sub_link)
             db.save_created_client(
                 uid,
                 w["inbound_id"],
                 email,
                 uidc,
                 link,
+                sub_id,
+                sub_link,
                 w["days"],
                 w["gb"],
                 w["start_after_first_use"],
@@ -988,6 +1000,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             for i in range(w["count"]):
                 uidc = str(uuid.uuid4())
                 email = f"{w['base_remark']}_{i+1}"
+                sub_id = generate_sub_id()
+                sub_link = subscription_link(sub_id)
                 clients.append({
                     "id": uidc,
                     "email": email,
@@ -997,18 +1011,21 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                     "flow": "",
                     "limitIp": 0,
                     "tgId": str(uid),
-                    "subId": "",
+                    "subId": sub_id,
                     "comment": "tg",
                     "reset": reset_days,
                 })
                 link = vless_link(uidc, inbound, email)
                 links.append(link)
+                subscription_links.append(sub_link)
                 db.save_created_client(
                     uid,
                     w["inbound_id"],
                     email,
                     uidc,
                     link,
+                    sub_id,
+                    sub_link,
                     w["days"],
                     w["gb"],
                     w["start_after_first_use"],
@@ -1037,7 +1054,13 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
     configs = "\n".join(links)
-    message_text = f"{summary}\n\nConfigs:\n{configs}" if configs else summary
+    subs = "\n".join(subscription_links)
+    sections = [summary]
+    if configs:
+        sections.append(f"Configs:\n{configs}")
+    if subs:
+        sections.append(f"Subscription links:\n{subs}")
+    message_text = "\n\n".join(sections)
     if len(message_text) <= 4000:
         await update.effective_message.reply_text(message_text, reply_markup=ReplyKeyboardRemove())
     else:

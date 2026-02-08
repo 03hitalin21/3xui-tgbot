@@ -104,6 +104,8 @@ def init_db() -> None:
                 email TEXT NOT NULL,
                 uuid TEXT NOT NULL,
                 vless_link TEXT NOT NULL,
+                sub_id TEXT NOT NULL,
+                subscription_link TEXT NOT NULL,
                 days INTEGER NOT NULL,
                 gb INTEGER NOT NULL,
                 start_after_first_use INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +133,8 @@ def init_db() -> None:
         _ensure_column(conn, "promo_codes", "expires_at", "expires_at INTEGER")
         _ensure_column(conn, "promo_codes", "created_by", "created_by INTEGER")
         _ensure_column(conn, "created_clients", "auto_renew", "auto_renew INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "created_clients", "sub_id", "sub_id TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "created_clients", "subscription_link", "subscription_link TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_referral_code ON agents(referral_code)")
 
         defaults = {
@@ -325,6 +329,8 @@ def save_created_client(
     email: str,
     uuid_: str,
     link: str,
+    sub_id: str,
+    subscription_link: str,
     days: int,
     gb: int,
     start_after_first_use: bool,
@@ -333,10 +339,23 @@ def save_created_client(
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO created_clients(tg_id,inbound_id,email,uuid,vless_link,days,gb,start_after_first_use,auto_renew,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO created_clients(tg_id,inbound_id,email,uuid,vless_link,sub_id,subscription_link,days,gb,start_after_first_use,auto_renew,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (tg_id, inbound_id, email, uuid_, link, days, gb, 1 if start_after_first_use else 0, 1 if auto_renew else 0, now_ts()),
+            (
+                tg_id,
+                inbound_id,
+                email,
+                uuid_,
+                link,
+                sub_id,
+                subscription_link,
+                days,
+                gb,
+                1 if start_after_first_use else 0,
+                1 if auto_renew else 0,
+                now_ts(),
+            ),
         )
 
 
