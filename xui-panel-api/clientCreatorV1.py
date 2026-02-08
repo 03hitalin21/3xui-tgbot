@@ -3,6 +3,8 @@ import uuid
 import time
 import requests
 import urllib3
+import secrets
+import string
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -10,6 +12,7 @@ BASE_URL = "https://141.11.107.4:57796/Z3byxHGOjyxwa4Xekm"
 USERNAME = "admin"
 PASSWORD = "admin"
 SERVER_HOST = "141.11.107.4"
+SUBSCRIPTION_PORT = 2096
 
 START_FROM_USE = {
     7: -604800000,
@@ -86,6 +89,15 @@ def make_vless(uuid_, inbound, remark):
     )
 
 
+def generate_sub_id(length: int = 16) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def subscription_link(sub_id: str) -> str:
+    return f"https://{SERVER_HOST}:{SUBSCRIPTION_PORT}/sub/{sub_id}"
+
+
 def main():
     print("=== 3x-UI Client Creator ===\n")
 
@@ -107,9 +119,12 @@ def main():
 
     clients = []
 
+    sub_links = []
+
     if mode == "s":
         remark = input("Client remark/email: ")
         uid = str(uuid.uuid4())
+        sub_id = generate_sub_id()
         clients.append({
             "id": uid,
             "email": remark,
@@ -119,10 +134,11 @@ def main():
             "flow": "",
             "limitIp": 0,
             "tgId": "",
-            "subId": "",
+            "subId": sub_id,
             "comment": "",
             "reset": 0
         })
+        sub_links.append(subscription_link(sub_id))
 
     else:
         base = input("Base remark (e.g. agent1): ")
@@ -130,6 +146,7 @@ def main():
 
         for i in range(count):
             uid = str(uuid.uuid4())
+            sub_id = generate_sub_id()
             clients.append({
                 "id": uid,
                 "email": f"{base}_{i+1}",
@@ -139,16 +156,19 @@ def main():
                 "flow": "",
                 "limitIp": 0,
                 "tgId": "",
-                "subId": "",
+                "subId": sub_id,
                 "comment": "",
                 "reset": 0
             })
+            sub_links.append(subscription_link(sub_id))
 
     xui.add_clients(inbound_id, clients)
 
     print("\n✅ Created successfully!\n")
-    for c in clients:
+    for idx, c in enumerate(clients):
         print(make_vless(c["id"], inbound, c["email"]))
+        if idx < len(sub_links):
+            print(sub_links[idx])
 
 
 if __name__ == "__main__":

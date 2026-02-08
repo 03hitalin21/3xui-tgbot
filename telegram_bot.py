@@ -14,7 +14,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import db
-from xui_api import XUIApi, vless_link
+from xui_api import XUIApi, subscription_link, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
@@ -26,6 +26,7 @@ MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
 CANCEL_OPTIONS = {"cancel", "لغو"}
 REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+SUB_ID_ALPHABET = string.ascii_lowercase + string.digits
 WIZARD_RATE_LIMIT = 5
 WIZARD_RATE_WINDOW = 600
 WIZARD_STARTS: Dict[int, List[float]] = {}
@@ -71,6 +72,24 @@ def get_user_role(tg_id: int) -> str:
 def generate_referral_code(length: int = 8) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def generate_sub_id(length: int = 16) -> str:
+    return "".join(secrets.choice(SUB_ID_ALPHABET) for _ in range(length))
+
+
+def parse_inbound_ids(text: str) -> Optional[List[int]]:
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if not parts:
+        return None
+    ids: List[int] = []
+    for part in parts:
+        value = parse_positive_int(part)
+        if not value:
+            return None
+        if value not in ids:
+            ids.append(value)
+    return ids if ids else None
 
 
 def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -214,6 +233,7 @@ def create_menu() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("🛒 Single Client", callback_data="create:single")],
             [InlineKeyboardButton("📦 Bulk Clients", callback_data="create:bulk")],
+            [InlineKeyboardButton("🧩 Multi-Inbound Client", callback_data="create:multi")],
             [InlineKeyboardButton("⬅️ Back", callback_data="menu:home")],
         ]
     )
@@ -295,16 +315,40 @@ def inbound_pricing_text(inbound_id: int) -> str:
     return f"{ppgb} برای هر GB + {ppday} برای هر روز"
 
 
+def inbound_pricing_text_list(inbound_ids: List[int]) -> str:
+    return " | ".join(f"{inbound_id}: {inbound_pricing_text(inbound_id)}" for inbound_id in inbound_ids)
+
+
+def order_count(w: Dict) -> int:
+    if w["kind"] == "bulk":
+        return int(w["count"])
+    if w["kind"] == "multi":
+        return len(w.get("inbound_ids") or [])
+    return 1
+
+
+def order_total_price(w: Dict) -> float:
+    count = order_count(w)
+    if w["kind"] == "multi":
+        total = sum(inbound_price(i, w["days"], w["gb"]) for i in (w.get("inbound_ids") or []))
+        return round(total, 2)
+    unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
+    return round(unit * count, 2)
+
+
 def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
-    count = w.get("count", 1)
+    inbound_ids = w.get("inbound_ids")
+    count = len(inbound_ids) if inbound_ids else w.get("count", 1)
     total_gb = w["gb"] * count
+    inbound_label = ", ".join(str(i) for i in inbound_ids) if inbound_ids else str(w["inbound_id"])
+    pricing_text = inbound_pricing_text_list(inbound_ids) if inbound_ids else inbound_pricing_text(w["inbound_id"])
     return (
         "🧾 <b>پیش‌نمایش سفارش</b>\n"
         f"تعداد کلاینت: <b>{count}</b>\n"
         f"مدت: <b>{w['days']} روز</b>\n"
         f"حجم کل: <b>{total_gb} گیگ</b>\n"
-        f"هزینه کل: <b>{net}</b> واحد (قیمت: {inbound_pricing_text(w['inbound_id'])})\n"
-        f"inbound: <b>{w['inbound_id']}</b>\n"
+        f"هزینه کل: <b>{net}</b> واحد (قیمت: {pricing_text})\n"
+        f"inbound: <b>{inbound_label}</b>\n"
         f"remark/base: <b>{w.get('remark') or w.get('base_remark')}</b>\n"
         f"شروع بعد از اولین استفاده: <b>{'بله' if w['start_after_first_use'] else 'خیر'}</b>\n"
         f"تمدید خودکار: <b>{'بله' if w['auto_renew'] else 'خیر'}</b>\n"
@@ -474,6 +518,19 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "create:multi":
+        if not can_start_wizard(uid):
+            await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
+            return
+        context.user_data["flow"] = "wizard_inbounds"
+        context.user_data["wizard"] = {"kind": "multi"}
+        logger.info("wizard_start | user=%s | kind=multi", uid)
+        await q.message.reply_text(
+            "➕ Multi-inbound client wizard\nStep 1/7: send inbound IDs separated by comma. Example: 1,2,3",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
     if data.startswith("admin:"):
         if not is_admin(uid):
             await q.message.reply_text("Only admin can use this option.")
@@ -552,6 +609,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ℹ️ جزئیات کلاینت\n"
                 f"Remark: {client['email']}\n"
                 f"Inbound: {client['inbound_id']}\n"
+                f"Subscription: {client['subscription_link']}\n"
                 f"مدت: {client['days']} روز | حجم: {client['gb']} گیگ\n"
                 f"تاریخ ایجاد: {created_at}\n"
                 f"انقضا: {expiry_text}\n"
@@ -756,6 +814,23 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Wizard flows
+    if flow == "wizard_inbounds":
+        inbound_ids = parse_inbound_ids(txt)
+        if not inbound_ids:
+            await update.message.reply_text(
+                "Invalid inbound list. Send comma-separated inbound IDs like: 1,2,3",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+        w["inbound_ids"] = inbound_ids
+        context.user_data["wizard"] = w
+        context.user_data["flow"] = "wizard_remark"
+        await update.message.reply_text(
+            "Step 2/7: send client remark/email. Hint: user123",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
     if flow == "wizard_inbound":
         if txt.lower() == "default":
             if not agent or not agent["preferred_inbound"]:
@@ -835,7 +910,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["days"] = d
         context.user_data["flow"] = "wizard_gb"
-        step = "Step 4/7" if w["kind"] == "single" else "Step 5/8"
+        step = "Step 4/7" if w["kind"] in {"single", "multi"} else "Step 5/8"
         await update.message.reply_text(f"{step}: send total GB. Hint: 50", reply_markup=cancel_keyboard())
         return
 
@@ -849,7 +924,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["gb"] = g
         context.user_data["flow"] = "wizard_start_after_first_use"
-        step = "Step 5/7" if w["kind"] == "single" else "Step 6/8"
+        step = "Step 5/7" if w["kind"] in {"single", "multi"} else "Step 6/8"
         await update.message.reply_text(f"{step}: start after first use? (y/n)", reply_markup=cancel_keyboard())
         return
 
@@ -860,7 +935,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         w["start_after_first_use"] = v in ["y", "yes"]
         context.user_data["flow"] = "wizard_auto_renew"
-        step = "Step 6/7" if w["kind"] == "single" else "Step 7/8"
+        step = "Step 6/7" if w["kind"] in {"single", "multi"} else "Step 7/8"
         await update.message.reply_text(
             f"{step}: Enable auto-renew? (y/n)\nHint: auto-renew resets one day before expiry.",
             reply_markup=cancel_keyboard(),
@@ -875,14 +950,13 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         w["auto_renew"] = v in ["y", "yes"]
 
         try:
-            unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
+            gross = order_total_price(w)
         except ValueError as exc:
             reset_flow(context)
             await update.message.reply_text(str(exc))
             return
 
-        count = 1 if w["kind"] == "single" else w["count"]
-        gross = round(unit * count, 2)
+        count = order_count(w)
         discount = float(context.user_data.get("promo_discount", 0.0))
         net = round(gross * (1 - discount / 100), 2)
         context.user_data["flow"] = "wizard_preview"
@@ -917,13 +991,13 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: Dict):
     effective_message = update.effective_message
     uid = update.effective_user.id
-    count = 1 if w["kind"] == "single" else w["count"]
-    unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
-    gross = round(unit * count, 2)
+    count = order_count(w)
+    gross = order_total_price(w)
     disc = float(context.user_data.pop("promo_discount", 0.0))
     net = round(gross * (1 - disc / 100), 2)
     auto_renew = bool(w.get("auto_renew", False))
     reset_days = max(w["days"] - 1, 0) if auto_renew else 0
+    inbound_ids = w.get("inbound_ids") or [w["inbound_id"]]
 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
@@ -947,17 +1021,19 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
     api = XUIApi()
     links: List[str] = []
+    subscription_links: List[str] = []
     expiry = expiry_value(w["days"], w["start_after_first_use"])
 
     try:
         api.login()
         logger.info("api_login | user=%s", uid)
-        inbound = api.get_inbound(w["inbound_id"])
-        clients = []
-
         if w["kind"] == "single":
+            inbound = api.get_inbound(w["inbound_id"])
+            clients = []
             uidc = str(uuid.uuid4())
             email = w["remark"]
+            sub_id = generate_sub_id()
+            sub_link = subscription_link(sub_id)
             clients.append({
                 "id": uidc,
                 "email": email,
@@ -967,27 +1043,35 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                 "flow": "",
                 "limitIp": 0,
                 "tgId": str(uid),
-                "subId": "",
+                "subId": sub_id,
                 "comment": "tg",
                 "reset": reset_days,
             })
             link = vless_link(uidc, inbound, email)
             links.append(link)
+            subscription_links.append(sub_link)
             db.save_created_client(
                 uid,
                 w["inbound_id"],
                 email,
                 uidc,
                 link,
+                sub_id,
+                sub_link,
                 w["days"],
                 w["gb"],
                 w["start_after_first_use"],
                 auto_renew,
             )
-        else:
+            api.add_clients(w["inbound_id"], clients)
+        elif w["kind"] == "bulk":
+            inbound = api.get_inbound(w["inbound_id"])
+            clients = []
             for i in range(w["count"]):
                 uidc = str(uuid.uuid4())
                 email = f"{w['base_remark']}_{i+1}"
+                sub_id = generate_sub_id()
+                sub_link = subscription_link(sub_id)
                 clients.append({
                     "id": uidc,
                     "email": email,
@@ -997,30 +1081,70 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                     "flow": "",
                     "limitIp": 0,
                     "tgId": str(uid),
-                    "subId": "",
+                    "subId": sub_id,
                     "comment": "tg",
                     "reset": reset_days,
                 })
                 link = vless_link(uidc, inbound, email)
                 links.append(link)
+                subscription_links.append(sub_link)
                 db.save_created_client(
                     uid,
                     w["inbound_id"],
                     email,
                     uidc,
                     link,
+                    sub_id,
+                    sub_link,
+                    w["days"],
+                    w["gb"],
+                    w["start_after_first_use"],
+                    auto_renew,
+                )
+            api.add_clients(w["inbound_id"], clients)
+        else:
+            sub_id = generate_sub_id()
+            sub_link = subscription_link(sub_id)
+            subscription_links.append(sub_link)
+            for inbound_id in inbound_ids:
+                inbound = api.get_inbound(inbound_id)
+                uidc = str(uuid.uuid4())
+                email = w["remark"]
+                client = {
+                    "id": uidc,
+                    "email": email,
+                    "enable": True,
+                    "expiryTime": expiry,
+                    "totalGB": int(w["gb"]) * 1024**3,
+                    "flow": "",
+                    "limitIp": 0,
+                    "tgId": str(uid),
+                    "subId": sub_id,
+                    "comment": "tg",
+                    "reset": reset_days,
+                }
+                api.add_clients(inbound_id, [client])
+                link = vless_link(uidc, inbound, email)
+                links.append(link)
+                db.save_created_client(
+                    uid,
+                    inbound_id,
+                    email,
+                    uidc,
+                    link,
+                    sub_id,
+                    sub_link,
                     w["days"],
                     w["gb"],
                     w["start_after_first_use"],
                     auto_renew,
                 )
 
-        api.add_clients(w["inbound_id"], clients)
-        db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "success")
-        logger.info("order_success | user=%s | inbound=%s | count=%s", uid, w["inbound_id"], count)
+        db.create_order(uid, inbound_ids[0], w["kind"], w["days"], w["gb"], count, gross, disc, net, "success")
+        logger.info("order_success | user=%s | inbound=%s | count=%s", uid, inbound_ids[0], count)
     except Exception as exc:
         db.add_balance(uid, net, "order.refund", str(exc))
-        db.create_order(uid, w["inbound_id"], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
+        db.create_order(uid, inbound_ids[0], w["kind"], w["days"], w["gb"], count, gross, disc, net, "failed")
         logger.error("order_failed | user=%s | error=%s", uid, exc)
         reset_flow(context)
         await effective_message.reply_text(
@@ -1030,14 +1154,21 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         return
 
     bal = db.get_agent(uid)["balance"]
+    inbound_label = ", ".join(str(i) for i in inbound_ids)
     summary = (
-        f"✅ Client(s) created\nType: {w['kind']}\nInbound: {w['inbound_id']}\n"
+        f"✅ Client(s) created\nType: {w['kind']}\nInbound: {inbound_label}\n"
         f"Days: {w['days']} | GB: {w['gb']} | Count: {count}\n"
         f"Start after first use: {'Yes' if w['start_after_first_use'] else 'No'} | Auto-renew: {'Yes' if auto_renew else 'No'}\n"
         f"Gross: {gross}\nDiscount: {disc}%\nCharged: {net}\nBalance: {bal}"
     )
     configs = "\n".join(links)
-    message_text = f"{summary}\n\nConfigs:\n{configs}" if configs else summary
+    subs = "\n".join(subscription_links)
+    sections = [summary]
+    if configs:
+        sections.append(f"Configs:\n{configs}")
+    if subs:
+        sections.append(f"Subscription links:\n{subs}")
+    message_text = "\n\n".join(sections)
     if len(message_text) <= 4000:
         await update.effective_message.reply_text(message_text, reply_markup=ReplyKeyboardRemove())
     else:

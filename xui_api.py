@@ -8,6 +8,7 @@ BASE_URL = os.getenv("XUI_BASE_URL", "")
 USERNAME = os.getenv("XUI_USERNAME", "")
 PASSWORD = os.getenv("XUI_PASSWORD", "")
 SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
+SUBSCRIPTION_PORT = int(os.getenv("XUI_SUBSCRIPTION_PORT", "2096"))
 
 
 class XUIApi:
@@ -119,3 +120,7 @@ def vless_link(uid: str, inbound: dict, remark: str) -> str:
             f"&sni={r['serverNames'][0]}&sid={r['shortIds'][0]}#{remark}"
         )
     return f"vless://{uid}@{SERVER_HOST}:{inbound['port']}?type={inbound['network']}&security={inbound['security']}&encryption=none#{remark}"
+
+
+def subscription_link(sub_id: str) -> str:
+    return f"https://{SERVER_HOST}:{SUBSCRIPTION_PORT}/sub/{sub_id}"
