@@ -57,6 +57,14 @@ export ADMIN_WEB_PORT="8080"
 export MAX_PLAN_DAYS="365"
 export MAX_PLAN_GB="2000"
 export MAX_BULK_COUNT="100"
+
+# webhook (required)
+export WEBHOOK_BASE_URL="https://your-domain.example"
+# optional
+export WEBHOOK_PATH="telegram"
+export WEBHOOK_LISTEN="0.0.0.0"
+export WEBHOOK_PORT="8443"
+export WEBHOOK_SECRET_TOKEN="set-a-secret-token"
 ```
 
 ## Run
@@ -64,6 +72,12 @@ export MAX_BULK_COUNT="100"
 pip install -r requirements.txt
 python telegram_bot.py
 ```
+
+## Webhook notes (production)
+- Your `WEBHOOK_BASE_URL` must be reachable over HTTPS with a valid certificate.
+- Ensure the `WEBHOOK_PORT` is open or place the bot behind a reverse proxy that forwards
+  `https://<domain>/<WEBHOOK_PATH>` to `http://127.0.0.1:<WEBHOOK_PORT>/<WEBHOOK_PATH>`.
+- If you set `WEBHOOK_SECRET_TOKEN`, configure your reverse proxy to pass it through.
 
 ## Admin web
 ```bash
