@@ -22,6 +22,9 @@ LOW_BALANCE_THRESHOLD = float(os.getenv("LOW_BALANCE_THRESHOLD", db.get_setting_
 MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
 MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
 MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
+MAX_LIMIT_IP = 5
+DEFAULT_FLOW = "xtls-rprx-vision"
+DEFAULT_LIMIT_IP = 2
 MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
 CANCEL_OPTIONS = {"cancel", "لغو"}
@@ -112,6 +115,10 @@ def parse_positive_int(text: str) -> Optional[int]:
     if value <= 0:
         return None
     return value
+
+
+def clamp_limit_ip(value: int) -> int:
+    return min(value, MAX_LIMIT_IP)
 
 
 def normalize_remark(text: str) -> Optional[str]:
@@ -1034,14 +1041,15 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             email = w["remark"]
             sub_id = generate_sub_id()
             sub_link = subscription_link(sub_id)
+            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
             clients.append({
                 "id": uidc,
                 "email": email,
                 "enable": True,
                 "expiryTime": expiry,
                 "totalGB": int(w["gb"]) * 1024**3,
-                "flow": "",
-                "limitIp": 0,
+                "flow": DEFAULT_FLOW,
+                "limitIp": limit_ip,
                 "tgId": str(uid),
                 "subId": sub_id,
                 "comment": "tg",
@@ -1067,6 +1075,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         elif w["kind"] == "bulk":
             inbound = api.get_inbound(w["inbound_id"])
             clients = []
+            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
             for i in range(w["count"]):
                 uidc = str(uuid.uuid4())
                 email = f"{w['base_remark']}_{i+1}"
@@ -1078,8 +1087,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                     "enable": True,
                     "expiryTime": expiry,
                     "totalGB": int(w["gb"]) * 1024**3,
-                    "flow": "",
-                    "limitIp": 0,
+                    "flow": DEFAULT_FLOW,
+                    "limitIp": limit_ip,
                     "tgId": str(uid),
                     "subId": sub_id,
                     "comment": "tg",
@@ -1106,6 +1115,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             sub_id = generate_sub_id()
             sub_link = subscription_link(sub_id)
             subscription_links.append(sub_link)
+            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
             for inbound_id in inbound_ids:
                 inbound = api.get_inbound(inbound_id)
                 uidc = str(uuid.uuid4())
@@ -1116,8 +1126,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                     "enable": True,
                     "expiryTime": expiry,
                     "totalGB": int(w["gb"]) * 1024**3,
-                    "flow": "",
-                    "limitIp": 0,
+                    "flow": DEFAULT_FLOW,
+                    "limitIp": limit_ip,
                     "tgId": str(uid),
                     "subId": sub_id,
                     "comment": "tg",

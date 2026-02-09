@@ -77,3 +77,4 @@ Open:
 - `xui_api.py` — x-ui API integration layer.
 - `db.py` — persistence & data/business helpers.
 - `admin_web.py` — admin panel.
+- `xui-panel-api` scripts have been removed as they are no longer needed.
