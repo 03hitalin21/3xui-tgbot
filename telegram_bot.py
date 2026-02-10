@@ -18,7 +18,13 @@ from xui_api import XUIApi, subscription_link, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
-LOW_BALANCE_THRESHOLD = float(os.getenv("LOW_BALANCE_THRESHOLD", db.get_setting_float("low_balance_threshold")))
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").rstrip("/")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram").lstrip("/")
+WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "")
+LOW_BALANCE_THRESHOLD_ENV = os.getenv("LOW_BALANCE_THRESHOLD")
+LOW_BALANCE_THRESHOLD = 0.0
 MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
 MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
 MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
@@ -208,9 +214,22 @@ def client_actions_keyboard(rows: List[Dict], total_items: int, page: int) -> In
 
 
 def required_missing() -> str:
-    required = ["TELEGRAM_BOT_TOKEN", "XUI_BASE_URL", "XUI_USERNAME", "XUI_PASSWORD", "XUI_SERVER_HOST"]
+    required = [
+        "TELEGRAM_BOT_TOKEN",
+        "XUI_BASE_URL",
+        "XUI_USERNAME",
+        "XUI_PASSWORD",
+        "XUI_SERVER_HOST",
+        "WEBHOOK_BASE_URL",
+    ]
     missing = [k for k in required if not os.getenv(k)]
     return ", ".join(missing)
+
+
+def load_low_balance_threshold() -> float:
+    if LOW_BALANCE_THRESHOLD_ENV is not None:
+        return float(LOW_BALANCE_THRESHOLD_ENV)
+    return float(db.get_setting_float("low_balance_threshold"))
 
 
 def expiry_value(days: int, start_after_first_use: bool) -> int:
@@ -1381,6 +1400,8 @@ def main() -> None:
     missing = required_missing()
     if missing:
         raise RuntimeError(f"Missing env vars: {missing}")
+    global LOW_BALANCE_THRESHOLD
+    LOW_BALANCE_THRESHOLD = load_low_balance_threshold()
 
     app = Application.builder().token(BOT_TOKEN).build()
     broadcast_conv_handler = ConversationHandler(
@@ -1407,7 +1428,14 @@ def main() -> None:
     app.add_handler(broadcast_conv_handler)
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_flow))
-    app.run_polling()
+    webhook_url = f"{WEBHOOK_BASE_URL}/{WEBHOOK_PATH}"
+    app.run_webhook(
+        listen=WEBHOOK_LISTEN,
+        port=WEBHOOK_PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=webhook_url,
+        secret_token=WEBHOOK_SECRET_TOKEN or None,
+    )
 
 
 if __name__ == "__main__":
