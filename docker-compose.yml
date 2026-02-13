@@ -1,0 +1,32 @@
+services:
+  bot:
+    build: .
+    container_name: tgbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+    volumes:
+      - bot_data:/data
+      - ./bot.log:/app/bot.log
+    ports:
+      - "${WEBHOOK_PORT:-8443}:${WEBHOOK_PORT:-8443}"
+
+  admin-web:
+    build: .
+    container_name: tgbot-admin-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+    command: ["python", "admin_web.py"]
+    volumes:
+      - bot_data:/data
+      - ./bot.log:/app/bot.log
+    ports:
+      - "${ADMIN_WEB_PORT:-8080}:${ADMIN_WEB_PORT:-8080}"
+
+volumes:
+  bot_data:
