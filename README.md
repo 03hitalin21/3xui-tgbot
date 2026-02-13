@@ -73,6 +73,34 @@ pip install -r requirements.txt
 python telegram_bot.py
 ```
 
+## Docker (recommended)
+1. Copy sample env and fill values:
+```bash
+cp .env.example .env
+```
+2. Start services:
+```bash
+docker compose up -d --build
+```
+- `bot` runs `telegram_bot.py`
+- `admin-web` runs `admin_web.py`
+- SQLite data persists in the named volume `bot_data` mounted at `/data`
+
+Stop:
+```bash
+docker compose down
+```
+
+After changing Python code, rebuild:
+```bash
+docker compose up -d --build
+```
+
+After changing only env values, restart is enough:
+```bash
+docker compose up -d
+```
+
 ## Webhook notes (production)
 - Your `WEBHOOK_BASE_URL` must be reachable over HTTPS with a valid certificate.
 - Ensure the `WEBHOOK_PORT` is open or place the bot behind a reverse proxy that forwards
