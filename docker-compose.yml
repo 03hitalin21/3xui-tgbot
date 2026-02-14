@@ -1,0 +1,54 @@
+services:
+  bot:
+    build: .
+    container_name: tgbot-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+      BOT_LOG_PATH: /logs/bot.log
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    ports:
+      - "${BOT_PORT:-8443}:8443"
+
+  admin-web:
+    build: .
+    container_name: tgbot-admin
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+    command: ["python", "admin_web.py"]
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    ports:
+      - "${PANEL_PORT:-8080}:8080"
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: tgbot-nginx
+    restart: unless-stopped
+    depends_on:
+      - bot
+      - admin-web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    profiles: ["ssl"]
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: tgbot-certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    profiles: ["ssl"]

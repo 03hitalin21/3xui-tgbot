@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import secrets
 import string
@@ -14,6 +15,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import db
+import xui_api
 from xui_api import XUIApi, subscription_link, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -42,12 +44,36 @@ WIZARD_STARTS: Dict[int, List[float]] = {}
 BROADCAST_CHOOSE_TARGET = 1
 BROADCAST_SEND_MESSAGE = 2
 BROADCAST_PREVIEW_CONFIRM = 3
+ENV_FILE = Path(__file__).with_name(".env")
+SETUP_PROMPT_FIELDS = [
+    ("TELEGRAM_BOT_TOKEN", "Telegram bot token", "", "required"),
+    ("ADMIN_TELEGRAM_ID", "Admin Telegram ID", "8477244366", "recommended"),
+    ("XUI_BASE_URL", "x-ui panel URL", "", "required"),
+    ("XUI_USERNAME", "x-ui username", "", "required"),
+    ("XUI_PASSWORD", "x-ui password", "", "required"),
+    ("XUI_SERVER_HOST", "x-ui server host/IP", "", "required"),
+    ("XUI_SUBSCRIPTION_PORT", "x-ui subscription port", "2096", "recommended"),
+    ("WEBHOOK_BASE_URL", "Webhook base URL", "", "required"),
+    ("WEBHOOK_PATH", "Webhook path", "telegram", "recommended"),
+    ("WEBHOOK_LISTEN", "Webhook listen address", "0.0.0.0", "recommended"),
+    ("WEBHOOK_PORT", "Webhook port", "8443", "recommended"),
+    ("WEBHOOK_SECRET_TOKEN", "Webhook secret token", "", "optional"),
+    ("MAX_PLAN_DAYS", "Maximum plan days", "365", "recommended"),
+    ("MAX_PLAN_GB", "Maximum plan GB", "2000", "recommended"),
+    ("MAX_BULK_COUNT", "Maximum bulk client count", "100", "recommended"),
+    ("BOT_DB_PATH", "SQLite DB path", "bot.db", "recommended"),
+]
 
+
+BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "logs/bot.log")
+log_dir = os.path.dirname(BOT_LOG_PATH)
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
+    handlers=[logging.FileHandler(BOT_LOG_PATH), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
@@ -224,6 +250,81 @@ def required_missing() -> str:
     ]
     missing = [k for k in required if not os.getenv(k)]
     return ", ".join(missing)
+
+
+def load_env_file() -> None:
+    if not ENV_FILE.exists():
+        return
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value.strip()
+
+
+def save_env_file(values: Dict[str, str]) -> None:
+    existing: Dict[str, str] = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            existing[key.strip()] = value.strip()
+    existing.update(values)
+    lines = [f"{key}={value}" for key, value in sorted(existing.items())]
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def interactive_setup_if_needed() -> None:
+    missing = required_missing()
+    if not missing or not os.isatty(0):
+        return
+
+    print("\nFirst-time setup: answer the prompts or press Enter to accept defaults.")
+    print("Values will be saved to .env so you don't need to export them manually.\n")
+    collected: Dict[str, str] = {}
+    for key, label, default, level in SETUP_PROMPT_FIELDS:
+        current = os.getenv(key, "")
+        shown_default = current or default
+        suffix = f" [{level}]"
+        if shown_default:
+            answer = input(f"{label} ({key}){suffix} [default: {shown_default}]: ").strip()
+            value = answer or shown_default
+        else:
+            answer = input(f"{label} ({key}){suffix} [default: empty]: ").strip()
+            value = answer
+        os.environ[key] = value
+        collected[key] = value
+
+    save_env_file(collected)
+    print("\nSaved setup values to .env\n")
+
+
+def apply_runtime_config() -> None:
+    global BOT_TOKEN, ADMIN_TELEGRAM_ID, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_LISTEN
+    global WEBHOOK_PORT, WEBHOOK_SECRET_TOKEN, LOW_BALANCE_THRESHOLD_ENV, MAX_DAYS, MAX_GB, MAX_BULK_COUNT
+
+    BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
+    WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").rstrip("/")
+    WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram").lstrip("/")
+    WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
+    WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+    WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "")
+    LOW_BALANCE_THRESHOLD_ENV = os.getenv("LOW_BALANCE_THRESHOLD")
+    MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
+    MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
+    MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
+
+    xui_api.BASE_URL = os.getenv("XUI_BASE_URL", "")
+    xui_api.USERNAME = os.getenv("XUI_USERNAME", "")
+    xui_api.PASSWORD = os.getenv("XUI_PASSWORD", "")
+    xui_api.SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
+    xui_api.SUBSCRIPTION_PORT = int(os.getenv("XUI_SUBSCRIPTION_PORT", "2096"))
 
 
 def load_low_balance_threshold() -> float:
@@ -1396,6 +1497,10 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def main() -> None:
+    load_env_file()
+    apply_runtime_config()
+    interactive_setup_if_needed()
+    apply_runtime_config()
     db.init_db()
     missing = required_missing()
     if missing:

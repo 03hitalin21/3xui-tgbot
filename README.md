@@ -73,6 +73,51 @@ pip install -r requirements.txt
 python telegram_bot.py
 ```
 
+## Docker (recommended)
+1. Copy sample env and fill values:
+```bash
+cp config/bot.env.example config/bot.env
+```
+2. Start services:
+```bash
+docker compose up -d --build
+```
+- `bot` runs `telegram_bot.py`
+- `admin-web` runs `admin_web.py`
+- SQLite data persists in `./data` on the server root
+- Logs are written to `./logs/bot.log` on the server root
+
+Stop:
+```bash
+docker compose down
+```
+
+After changing Python code, rebuild:
+```bash
+docker compose up -d --build
+```
+
+After changing only env values, restart is enough:
+```bash
+docker compose up -d
+```
+
+
+## Recommended server-root layout
+```
+.
+├── config/
+│   └── bot.env            # copy from bot.env.example
+├── data/                  # sqlite data (persistent)
+├── logs/                  # bot logs
+├── docker-compose.yml
+├── Dockerfile
+├── telegram_bot.py
+├── admin_web.py
+├── db.py
+└── xui_api.py
+```
+
 ## Webhook notes (production)
 - Your `WEBHOOK_BASE_URL` must be reachable over HTTPS with a valid certificate.
 - Ensure the `WEBHOOK_PORT` is open or place the bot behind a reverse proxy that forwards
