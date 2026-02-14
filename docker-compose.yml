@@ -1,0 +1,30 @@
+services:
+  bot:
+    build: .
+    container_name: tgbot
+    restart: unless-stopped
+    env_file:
+      - ./config/bot.env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+      BOT_LOG_PATH: /logs/bot.log
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    ports:
+      - "8443:8443"
+
+  admin-web:
+    build: .
+    container_name: tgbot-admin-web
+    restart: unless-stopped
+    env_file:
+      - ./config/bot.env
+    environment:
+      BOT_DB_PATH: /data/bot.db
+    command: ["python", "admin_web.py"]
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    ports:
+      - "8080:8080"
