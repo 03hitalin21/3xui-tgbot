@@ -73,6 +73,11 @@ pip install -r requirements.txt
 python telegram_bot.py
 ```
 
+## One-liner install
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New3/install.sh)
+```
+
 ## Docker (recommended)
 1. Copy sample env and fill values:
 ```bash
