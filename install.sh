@@ -101,17 +101,43 @@ MAX_BULK_COUNT=$MAX_BULK_COUNT
 ENVEOF
 }
 
+download_tls_params() {
+  local target_dir="$1"
+  local certbot_conf_dir="$target_dir/certbot/conf"
+
+  mkdir -p "$certbot_conf_dir"
+
+  if [[ ! -f "$certbot_conf_dir/options-ssl-nginx.conf" ]]; then
+    echo "Downloading recommended TLS options file..."
+    curl -fsSL \
+      https://raw.githubusercontent.com/certbot/certbot/master/certbot-nginx/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+      -o "$certbot_conf_dir/options-ssl-nginx.conf"
+  else
+    echo "Using existing TLS options: $certbot_conf_dir/options-ssl-nginx.conf"
+  fi
+
+  if [[ ! -f "$certbot_conf_dir/ssl-dhparams.pem" ]]; then
+    echo "Downloading recommended DH params file..."
+    curl -fsSL \
+      https://raw.githubusercontent.com/certbot/certbot/master/certbot/certbot/ssl-dhparams.pem \
+      -o "$certbot_conf_dir/ssl-dhparams.pem"
+  else
+    echo "Using existing DH params: $certbot_conf_dir/ssl-dhparams.pem"
+  fi
+}
+
 write_nginx_config() {
   local target_dir="$1"
   local domain="$2"
-  local panel_port="$3"
-  local bot_path="$4"
+  local bot_path="$3"
+  local webhook_secret_token="$4"
 
   mkdir -p "$target_dir/nginx/conf.d" "$target_dir/certbot/www" "$target_dir/certbot/conf"
 
   cat > "$target_dir/nginx/conf.d/default.conf" <<NGINXEOF
 server {
     listen 80;
+    listen [::]:80;
     server_name $domain;
 
     location /.well-known/acme-challenge/ {
@@ -124,22 +150,44 @@ server {
 }
 
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name $domain;
 
     ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     location /$bot_path {
         proxy_pass http://bot:8443/$bot_path;
+        proxy_http_version 1.1;
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Telegram-Bot-Api-Secret-Token "$webhook_secret_token";
+    }
+
+    location /admin {
+        proxy_pass http://admin-web:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    # Backward compatibility with existing deployments that use '/'.
     location / {
         proxy_pass http://admin-web:8080;
+        proxy_http_version 1.1;
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
@@ -147,22 +195,154 @@ server {
 NGINXEOF
 }
 
+create_dummy_certificate() {
+  local target_dir="$1"
+  local domain="$2"
+  local cert_path="/etc/letsencrypt/live/$domain"
+
+  echo "Creating temporary self-signed certificate for $domain ..."
+  mkdir -p "$target_dir/certbot/conf/live/$domain"
+
+  (
+    cd "$target_dir"
+    docker compose --profile ssl run --rm --entrypoint "\
+      sh -c 'mkdir -p $cert_path && \
+      openssl req -x509 -nodes -newkey rsa:4096 -days 1 \
+      -keyout $cert_path/privkey.pem \
+      -out $cert_path/fullchain.pem \
+      -subj /CN=localhost'" certbot
+  )
+}
+
+delete_certificate_for_domain() {
+  local target_dir="$1"
+  local domain="$2"
+
+  rm -rf "$target_dir/certbot/conf/live/$domain"
+  rm -rf "$target_dir/certbot/conf/archive/$domain"
+  rm -f "$target_dir/certbot/conf/renewal/$domain.conf"
+}
+
+resolve_public_ipv4() {
+  curl -4fsS https://api.ipify.org 2>/dev/null || true
+}
+
+check_domain_points_to_server() {
+  local domain="$1"
+  local public_ip
+  local dns_ips
+
+  public_ip="$(resolve_public_ipv4)"
+  dns_ips="$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+
+  if [[ -z "$dns_ips" ]]; then
+    echo "❌ Could not resolve A records for $domain."
+    return 1
+  fi
+
+  echo "Domain A records for $domain:"
+  echo "$dns_ips"
+
+  if [[ -z "$public_ip" ]]; then
+    echo "⚠️ Could not determine this server's public IPv4 (network restriction)."
+    echo "Please verify DNS manually before requesting a certificate."
+    return 0
+  fi
+
+  echo "Detected server public IPv4: $public_ip"
+
+  if ! grep -qx "$public_ip" <<<"$dns_ips"; then
+    echo "❌ DNS mismatch: $domain does not point to this server IP ($public_ip)."
+    return 1
+  fi
+
+  return 0
+}
+
+check_ports_80_443_available() {
+  local in_use
+  in_use="$(ss -ltn '( sport = :80 or sport = :443 )' | tail -n +2 || true)"
+
+  if [[ -n "$in_use" ]]; then
+    echo "⚠️ Ports 80/443 already have listeners:"
+    echo "$in_use"
+    echo "This can be fine if it's the nginx container, but may block cert issuance if another service owns the ports."
+  else
+    echo "Ports 80/443 are free before nginx start."
+  fi
+
+  if command_exists ufw; then
+    echo "Firewall snapshot (ufw):"
+    ${SUDO:-} ufw status verbose || true
+  fi
+}
+
 request_cert() {
   local target_dir="$1"
   local domain="$2"
   local email="$3"
+  local staging_mode="$4"
 
-  (cd "$target_dir" && docker compose --profile ssl up -d nginx)
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot certonly --webroot -w /var/www/certbot -d "$domain" --email "$email" --agree-tos --no-eff-email)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload)
-  echo "SSL certificate issued and nginx reloaded."
+  check_domain_points_to_server "$domain"
+  check_ports_80_443_available
+
+  local staging_arg=""
+  if [[ "$staging_mode" =~ ^[Yy]$ ]]; then
+    staging_arg="--staging"
+    echo "Using Let's Encrypt staging endpoint."
+  fi
+
+  create_dummy_certificate "$target_dir" "$domain"
+
+  # Start nginx with dummy certificate first (avoids chicken-and-egg startup failure).
+  (
+    cd "$target_dir"
+    docker compose --profile ssl up -d nginx
+  )
+
+  # Remove dummy cert so certbot can create real cert files.
+  delete_certificate_for_domain "$target_dir" "$domain"
+
+  echo "Requesting a real Let's Encrypt certificate for $domain ..."
+  if ! (
+    cd "$target_dir"
+    docker compose --profile ssl run --rm certbot certonly --webroot \
+      -w /var/www/certbot \
+      -d "$domain" \
+      --email "$email" \
+      --agree-tos \
+      --no-eff-email \
+      $staging_arg
+  ); then
+    echo "❌ Certificate request failed. Attempting rollback to dummy certificate so nginx can keep serving HTTPS..."
+    create_dummy_certificate "$target_dir" "$domain"
+    (
+      cd "$target_dir"
+      docker compose --profile ssl exec nginx nginx -s reload || true
+    )
+    echo "Rollback complete with dummy certificate. Check DNS, firewall, and certbot logs, then retry."
+    return 1
+  fi
+
+  (
+    cd "$target_dir"
+    docker compose --profile ssl exec nginx nginx -s reload
+  )
+
+  echo "✅ SSL certificate issued and nginx reloaded."
 }
 
 renew_cert() {
   local target_dir="$1"
 
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot renew)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload || true)
+  (
+    cd "$target_dir"
+    docker compose --profile ssl run --rm certbot renew
+  )
+  (
+    cd "$target_dir"
+    docker compose --profile ssl exec nginx nginx -s reload || true
+  )
   echo "Renewal command completed."
 }
 
@@ -170,9 +350,18 @@ revoke_cert() {
   local target_dir="$1"
   local domain="$2"
 
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot revoke --cert-path "/etc/letsencrypt/live/$domain/cert.pem" --non-interactive || true)
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot delete --cert-name "$domain" --non-interactive || true)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload || true)
+  (
+    cd "$target_dir"
+    docker compose --profile ssl run --rm certbot revoke --cert-path "/etc/letsencrypt/live/$domain/cert.pem" --non-interactive || true
+  )
+  (
+    cd "$target_dir"
+    docker compose --profile ssl run --rm certbot delete --cert-name "$domain" --non-interactive || true
+  )
+  (
+    cd "$target_dir"
+    docker compose --profile ssl exec nginx nginx -s reload || true
+  )
   echo "Revocation/delete command completed."
 }
 
@@ -213,13 +402,16 @@ main() {
   if [[ "$ssl_choice" =~ ^[Yy]$ ]]; then
     SSL_DOMAIN="$(prompt_value "Domain for SSL (must point to this server)" "")"
     CERTBOT_EMAIL="$(prompt_value "Email for Let's Encrypt" "")"
-    write_nginx_config "$target_dir" "$SSL_DOMAIN" "$PANEL_PORT" "$WEBHOOK_PATH"
+    LE_STAGING="$(prompt_value "Use Let's Encrypt staging server for testing? (y/n)" "n")"
+
+    download_tls_params "$target_dir"
+    write_nginx_config "$target_dir" "$SSL_DOMAIN" "$WEBHOOK_PATH" "$WEBHOOK_SECRET_TOKEN"
 
     (cd "$target_dir" && docker compose up -d --build)
 
     cert_menu="$(prompt_value "SSL action: 1) Request 2) Renew 3) Revoke 4) Skip" "1")"
     case "$cert_menu" in
-      1) request_cert "$target_dir" "$SSL_DOMAIN" "$CERTBOT_EMAIL" ;;
+      1) request_cert "$target_dir" "$SSL_DOMAIN" "$CERTBOT_EMAIL" "$LE_STAGING" ;;
       2) renew_cert "$target_dir" ;;
       3) revoke_cert "$target_dir" "$SSL_DOMAIN" ;;
       *) echo "Skipping SSL certificate action." ;;
@@ -233,7 +425,7 @@ main() {
   echo "Project directory: $target_dir"
   echo "Panel URL: http://<server-ip>:$PANEL_PORT/?token=$ADMIN_WEB_TOKEN"
   if [[ "${ssl_choice}" =~ ^[Yy]$ ]]; then
-    echo "If SSL certificate was issued, use: https://$SSL_DOMAIN/?token=$ADMIN_WEB_TOKEN"
+    echo "If SSL certificate was issued, use: https://$SSL_DOMAIN/admin?token=$ADMIN_WEB_TOKEN"
   fi
 }
 
