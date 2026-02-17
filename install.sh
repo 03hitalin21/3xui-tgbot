@@ -76,13 +76,6 @@ clone_or_update_repo() {
   fi
 }
 
-normalize_webhook_base_url() {
-  if [[ -z "${WEBHOOK_BASE_URL:-}" && -n "${DOMAIN:-}" ]]; then
-    WEBHOOK_BASE_URL="https://$DOMAIN"
-    echo "Auto-configured WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL from DOMAIN."
-  fi
-}
-
 write_env_file() {
   local target_dir="$1"
 
@@ -105,8 +98,6 @@ WEBHOOK_SECRET_TOKEN=$WEBHOOK_SECRET_TOKEN
 MAX_PLAN_DAYS=$MAX_PLAN_DAYS
 MAX_PLAN_GB=$MAX_PLAN_GB
 MAX_BULK_COUNT=$MAX_BULK_COUNT
-DOMAIN=$DOMAIN
-LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
 ENVEOF
 }
 
@@ -122,49 +113,18 @@ configure_app() {
   XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
   WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
   WEBHOOK_PATH="$(prompt_value "Webhook path" "telegram")"
-  PANEL_PORT="$(prompt_value "Public admin panel port (for local/non-SSL fallback)" "8080")"
-  BOT_PORT="$(prompt_value "Public bot webhook port (for local/non-SSL fallback)" "8443")"
+  PANEL_PORT="$(prompt_value "Public admin panel port" "8080")"
+  BOT_PORT="$(prompt_value "Public bot webhook port" "8443")"
   ADMIN_TELEGRAM_ID="$(prompt_value "Admin Telegram ID (optional)" "")"
   ADMIN_WEB_TOKEN="$(prompt_value "Admin web token" "change-me")"
   WEBHOOK_SECRET_TOKEN="$(prompt_value "Webhook secret token (recommended)" "")"
   MAX_PLAN_DAYS="$(prompt_value "MAX_PLAN_DAYS" "365")"
   MAX_PLAN_GB="$(prompt_value "MAX_PLAN_GB" "2000")"
   MAX_BULK_COUNT="$(prompt_value "MAX_BULK_COUNT" "100")"
-  DOMAIN="$(prompt_value "Domain for nginx SSL (leave empty if no SSL)" "")"
-  LETSENCRYPT_EMAIL="$(prompt_value "Let's Encrypt account email" "admin@${DOMAIN:-example.com}")"
-
-  normalize_webhook_base_url
-
-  mkdir -p "$target_dir/data" "$target_dir/logs" "$target_dir/acme-webroot/.well-known/acme-challenge" "$target_dir/certs"
+  mkdir -p "$target_dir/data" "$target_dir/logs"
   write_env_file "$target_dir"
 
   echo "✅ Saved configuration to $target_dir/.env"
-}
-
-manage_certificates() {
-  local target_dir="$1"
-  local domain
-
-  if [[ -f "$target_dir/.env" ]]; then
-    domain="$(awk -F= '/^DOMAIN=/{print $2}' "$target_dir/.env" | tail -n1)"
-  fi
-
-  if [[ -z "${domain:-}" ]]; then
-    domain="$(prompt_value "Domain for certificate management" "")"
-  fi
-
-  if [[ -z "$domain" ]]; then
-    echo "No domain provided. Skipping certificate management."
-    return
-  fi
-
-  if [[ ! -x "$target_dir/scripts/setup_ssl.sh" ]]; then
-    echo "Missing $target_dir/scripts/setup_ssl.sh"
-    return 1
-  fi
-
-  echo "Running certificate management for $domain ..."
-  (cd "$target_dir" && ./scripts/setup_ssl.sh "$domain")
 }
 
 set_webhook() {
@@ -192,10 +152,9 @@ primary_menu() {
     echo "========== Primary Menu =========="
     echo "1) Configure app (.env)"
     echo "2) Start / restart containers"
-    echo "3) Certificate management (acme.sh)"
-    echo "4) Set Telegram webhook now"
-    echo "5) Full setup (1 -> 2 -> optional 3 -> optional 4)"
-    echo "6) Exit"
+    echo "3) Set Telegram webhook now"
+    echo "4) Full setup (1 -> 2 -> optional 3)"
+    echo "5) Exit"
 
     local choice
     choice="$(prompt_value "Select an option" "5")"
@@ -203,21 +162,15 @@ primary_menu() {
     case "$choice" in
       1) configure_app "$target_dir" ;;
       2) start_stack "$target_dir" ;;
-      3) manage_certificates "$target_dir" ;;
-      4) set_webhook "$target_dir" ;;
-      5)
+      3) set_webhook "$target_dir" ;;
+      4)
         configure_app "$target_dir"
         start_stack "$target_dir"
-        if [[ "$(prompt_value "Run certificate management now? (y/n)" "n")" =~ ^[Yy]$ ]]; then
-          manage_certificates "$target_dir"
-        else
-          echo "Skipped certificate management by user choice."
-        fi
         if [[ "$(prompt_value "Set Telegram webhook now? (y/n)" "y")" =~ ^[Yy]$ ]]; then
           set_webhook "$target_dir"
         fi
         ;;
-      6) break ;;
+      5) break ;;
       *) echo "Invalid option." ;;
     esac
   done
@@ -237,7 +190,7 @@ main() {
   echo
   echo "✅ Installer completed."
   echo "Project directory: $target_dir"
-  echo "If DOMAIN is configured, access panel via: https://<domain>/admin?token=<ADMIN_WEB_TOKEN>"
+  echo "Access panel via your HTTPS domain reverse proxy at /admin?token=<ADMIN_WEB_TOKEN>"
 }
 
 main "$@"
