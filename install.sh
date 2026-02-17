@@ -98,82 +98,104 @@ WEBHOOK_SECRET_TOKEN=$WEBHOOK_SECRET_TOKEN
 MAX_PLAN_DAYS=$MAX_PLAN_DAYS
 MAX_PLAN_GB=$MAX_PLAN_GB
 MAX_BULK_COUNT=$MAX_BULK_COUNT
+DOMAIN=$DOMAIN
+LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
 ENVEOF
 }
 
-write_nginx_config() {
-  local target_dir="$1"
-  local domain="$2"
-  local panel_port="$3"
-  local bot_path="$4"
-
-  mkdir -p "$target_dir/nginx/conf.d" "$target_dir/certbot/www" "$target_dir/certbot/conf"
-
-  cat > "$target_dir/nginx/conf.d/default.conf" <<NGINXEOF
-server {
-    listen 80;
-    server_name $domain;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    server_name $domain;
-
-    ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
-
-    location /$bot_path {
-        proxy_pass http://bot:8443/$bot_path;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    location / {
-        proxy_pass http://admin-web:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-NGINXEOF
-}
-
-request_cert() {
-  local target_dir="$1"
-  local domain="$2"
-  local email="$3"
-
-  (cd "$target_dir" && docker compose --profile ssl up -d nginx)
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot certonly --webroot -w /var/www/certbot -d "$domain" --email "$email" --agree-tos --no-eff-email)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload)
-  echo "SSL certificate issued and nginx reloaded."
-}
-
-renew_cert() {
+configure_app() {
   local target_dir="$1"
 
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot renew)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload || true)
-  echo "Renewal command completed."
+  echo
+  echo "--- 3xui Telegram Bot Configuration ---"
+  TELEGRAM_BOT_TOKEN="$(prompt_value "Telegram Bot Token" "" true)"
+  XUI_BASE_URL="$(prompt_value "XUI Panel Base URL (e.g. https://panel.example.com:2053/panel)" "")"
+  XUI_USERNAME="$(prompt_value "XUI Username" "admin")"
+  XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
+  XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
+  WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
+  WEBHOOK_PATH="$(prompt_value "Webhook path" "telegram")"
+  PANEL_PORT="$(prompt_value "Public admin panel port (for local/non-SSL fallback)" "8080")"
+  BOT_PORT="$(prompt_value "Public bot webhook port (for local/non-SSL fallback)" "8443")"
+  ADMIN_TELEGRAM_ID="$(prompt_value "Admin Telegram ID (optional)" "")"
+  ADMIN_WEB_TOKEN="$(prompt_value "Admin web token" "change-me")"
+  WEBHOOK_SECRET_TOKEN="$(prompt_value "Webhook secret token (recommended)" "")"
+  MAX_PLAN_DAYS="$(prompt_value "MAX_PLAN_DAYS" "365")"
+  MAX_PLAN_GB="$(prompt_value "MAX_PLAN_GB" "2000")"
+  MAX_BULK_COUNT="$(prompt_value "MAX_BULK_COUNT" "100")"
+  DOMAIN="$(prompt_value "Domain for nginx SSL (leave empty if no SSL)" "")"
+  LETSENCRYPT_EMAIL="$(prompt_value "Let's Encrypt account email" "admin@${DOMAIN:-example.com}")"
+
+  mkdir -p "$target_dir/data" "$target_dir/logs" "$target_dir/acme-webroot/.well-known/acme-challenge" "$target_dir/certs"
+  write_env_file "$target_dir"
+
+  echo "✅ Saved configuration to $target_dir/.env"
 }
 
-revoke_cert() {
+manage_certificates() {
   local target_dir="$1"
-  local domain="$2"
+  local domain
 
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot revoke --cert-path "/etc/letsencrypt/live/$domain/cert.pem" --non-interactive || true)
-  (cd "$target_dir" && docker compose --profile ssl run --rm certbot delete --cert-name "$domain" --non-interactive || true)
-  (cd "$target_dir" && docker compose --profile ssl exec nginx nginx -s reload || true)
-  echo "Revocation/delete command completed."
+  if [[ -f "$target_dir/.env" ]]; then
+    domain="$(awk -F= '/^DOMAIN=/{print $2}' "$target_dir/.env" | tail -n1)"
+  fi
+
+  if [[ -z "${domain:-}" ]]; then
+    domain="$(prompt_value "Domain for certificate management" "")"
+  fi
+
+  if [[ -z "$domain" ]]; then
+    echo "No domain provided. Skipping certificate management."
+    return
+  fi
+
+  if [[ ! -x "$target_dir/scripts/setup_ssl.sh" ]]; then
+    echo "Missing $target_dir/scripts/setup_ssl.sh"
+    return 1
+  fi
+
+  echo "Running certificate management for $domain ..."
+  (cd "$target_dir" && ./scripts/setup_ssl.sh "$domain")
+}
+
+start_stack() {
+  local target_dir="$1"
+  (cd "$target_dir" && docker compose up -d --build)
+  echo "✅ Docker services started."
+}
+
+primary_menu() {
+  local target_dir="$1"
+
+  while true; do
+    echo
+    echo "========== Primary Menu =========="
+    echo "1) Configure app (.env)"
+    echo "2) Start / restart containers"
+    echo "3) Certificate management (acme.sh)"
+    echo "4) Full setup (1 -> 2 -> optional 3)"
+    echo "5) Exit"
+
+    local choice
+    choice="$(prompt_value "Select an option" "4")"
+
+    case "$choice" in
+      1) configure_app "$target_dir" ;;
+      2) start_stack "$target_dir" ;;
+      3) manage_certificates "$target_dir" ;;
+      4)
+        configure_app "$target_dir"
+        start_stack "$target_dir"
+        if [[ "$(prompt_value "Run certificate management now? (y/n)" "n")" =~ ^[Yy]$ ]]; then
+          manage_certificates "$target_dir"
+        else
+          echo "Skipped certificate management by user choice."
+        fi
+        ;;
+      5) break ;;
+      *) echo "Invalid option." ;;
+    esac
+  done
 }
 
 main() {
@@ -185,56 +207,12 @@ main() {
   target_dir="$(prompt_value "Install directory" "$TARGET_DIR_DEFAULT")"
 
   clone_or_update_repo "$target_dir"
-  mkdir -p "$target_dir/data" "$target_dir/logs"
+  primary_menu "$target_dir"
 
   echo
-  echo "--- 3xui Telegram Bot Interactive Setup ---"
-  TELEGRAM_BOT_TOKEN="$(prompt_value "Telegram Bot Token" "" true)"
-  XUI_BASE_URL="$(prompt_value "XUI Panel Base URL (e.g. https://panel.example.com:2053/panel)" "")"
-  XUI_USERNAME="$(prompt_value "XUI Username" "admin")"
-  XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
-  XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
-  WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
-  WEBHOOK_PATH="$(prompt_value "Webhook path" "telegram")"
-  PANEL_PORT="$(prompt_value "Panel host port" "8080")"
-  BOT_PORT="$(prompt_value "Bot webhook host port" "8443")"
-  ADMIN_TELEGRAM_ID="$(prompt_value "Admin Telegram ID (optional)" "")"
-  ADMIN_WEB_TOKEN="$(prompt_value "Admin web token" "change-me")"
-  WEBHOOK_SECRET_TOKEN="$(prompt_value "Webhook secret token (recommended)" "")"
-  MAX_PLAN_DAYS="$(prompt_value "MAX_PLAN_DAYS" "365")"
-  MAX_PLAN_GB="$(prompt_value "MAX_PLAN_GB" "2000")"
-  MAX_BULK_COUNT="$(prompt_value "MAX_BULK_COUNT" "100")"
-
-  write_env_file "$target_dir"
-
-  echo
-  ssl_choice="$(prompt_value "Enable SSL reverse proxy with Nginx + Certbot? (y/n)" "y")"
-
-  if [[ "$ssl_choice" =~ ^[Yy]$ ]]; then
-    SSL_DOMAIN="$(prompt_value "Domain for SSL (must point to this server)" "")"
-    CERTBOT_EMAIL="$(prompt_value "Email for Let's Encrypt" "")"
-    write_nginx_config "$target_dir" "$SSL_DOMAIN" "$PANEL_PORT" "$WEBHOOK_PATH"
-
-    (cd "$target_dir" && docker compose up -d --build)
-
-    cert_menu="$(prompt_value "SSL action: 1) Request 2) Renew 3) Revoke 4) Skip" "1")"
-    case "$cert_menu" in
-      1) request_cert "$target_dir" "$SSL_DOMAIN" "$CERTBOT_EMAIL" ;;
-      2) renew_cert "$target_dir" ;;
-      3) revoke_cert "$target_dir" "$SSL_DOMAIN" ;;
-      *) echo "Skipping SSL certificate action." ;;
-    esac
-  else
-    (cd "$target_dir" && docker compose up -d --build)
-  fi
-
-  echo
-  echo "✅ Installation completed successfully!"
+  echo "✅ Installer completed."
   echo "Project directory: $target_dir"
-  echo "Panel URL: http://<server-ip>:$PANEL_PORT/?token=$ADMIN_WEB_TOKEN"
-  if [[ "${ssl_choice}" =~ ^[Yy]$ ]]; then
-    echo "If SSL certificate was issued, use: https://$SSL_DOMAIN/?token=$ADMIN_WEB_TOKEN"
-  fi
+  echo "If DOMAIN is configured, access panel via: https://<domain>/admin?token=<ADMIN_WEB_TOKEN>"
 }
 
 main "$@"

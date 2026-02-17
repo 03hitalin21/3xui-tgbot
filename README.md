@@ -73,6 +73,11 @@ pip install -r requirements.txt
 python telegram_bot.py
 ```
 
+## One-liner install
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New3/install.sh)
+```
+
 ## Docker (recommended)
 1. Copy sample env and fill values:
 ```bash
@@ -124,6 +129,41 @@ docker compose up -d
   `https://<domain>/<WEBHOOK_PATH>` to `http://127.0.0.1:<WEBHOOK_PORT>/<WEBHOOK_PATH>`.
 - If you set `WEBHOOK_SECRET_TOKEN`, configure your reverse proxy to pass it through.
 - If you set `BOT_DB_PATH`, make sure the directory exists and is writable by the bot process.
+
+## SSL certificate management (acme.sh + nginx)
+
+This project now separates certificate handling from core app startup.
+If you already have SSL on your domain, simply skip certificate management in `install.sh` primary menu.
+
+### Requirements
+- Domain A record must point to your server IP (`DOMAIN` in `.env`).
+- Ports `80` and `443` must be reachable from the internet.
+- Docker/Compose must be running.
+
+### Nginx + ACME challenge flow
+- Nginx serves HTTP-01 challenge files from `./acme-webroot`.
+- Certificates are stored in `./certs/live/<domain>/`.
+- Nginx reads certs from mounted volume `./certs:/etc/nginx/certs:ro`.
+
+### One-time SSL setup
+```bash
+./scripts/setup_ssl.sh example.com
+```
+
+### Automatic renewal
+- `acme` service in `docker-compose.yml` runs a renewal loop every 12 hours.
+- It executes `./scripts/setup_ssl.sh <domain> --renew-only`.
+- On successful renew/install, acme.sh runs reload hook:
+  `docker compose exec nginx nginx -s reload`
+
+### Manual validation
+```bash
+docker compose ps
+docker compose logs --tail=200 nginx acme
+ls -l certs/live/<your-domain>/
+curl -I http://<your-domain>
+curl -Ik https://<your-domain>/admin
+```
 
 ## Admin web
 ```bash
