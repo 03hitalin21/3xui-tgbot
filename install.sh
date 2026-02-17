@@ -105,6 +105,13 @@ WEBHOOK_PATH=$WEBHOOK_PATH
 WEBHOOK_LISTEN=0.0.0.0
 WEBHOOK_PORT=8443
 WEBHOOK_SECRET_TOKEN=$WEBHOOK_SECRET_TOKEN
+SSL_ENABLED=$SSL_ENABLED
+SSL_DOMAIN=$SSL_DOMAIN
+SSL_INCLUDE_WWW=$SSL_INCLUDE_WWW
+SSL_CERT_PATH=$SSL_CERT_PATH
+SSL_KEY_PATH=$SSL_KEY_PATH
+LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
+LETSENCRYPT_WEBROOT=/var/www/certbot
 MAX_PLAN_DAYS=$MAX_PLAN_DAYS
 MAX_PLAN_GB=$MAX_PLAN_GB
 MAX_BULK_COUNT=$MAX_BULK_COUNT
@@ -122,6 +129,15 @@ configure_app() {
   XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
   XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
   WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
+  SSL_DOMAIN="$(prompt_value "Primary domain for TLS (e.g. mehrsway.space)" "")"
+  if [[ -z "${WEBHOOK_BASE_URL}" && -n "${SSL_DOMAIN}" ]]; then
+    WEBHOOK_BASE_URL="https://${SSL_DOMAIN}"
+  fi
+  SSL_INCLUDE_WWW="$(prompt_value "Include www subdomain in certificate? (true/false)" "true")"
+  LETSENCRYPT_EMAIL="$(prompt_value "Email for Let's Encrypt notices" "")"
+  SSL_ENABLED="true"
+  SSL_CERT_PATH="/etc/letsencrypt/live/${SSL_DOMAIN}/fullchain.pem"
+  SSL_KEY_PATH="/etc/letsencrypt/live/${SSL_DOMAIN}/privkey.pem"
   WEBHOOK_PATH="telegram/$(generate_token 8)"
   PANEL_PORT="8080"
   BOT_PORT="8443"
@@ -164,6 +180,18 @@ set_webhook() {
   (cd "$target_dir" && ./scripts/set_webhook.sh "$target_dir")
 }
 
+
+setup_ssl() {
+  local target_dir="$1"
+
+  if [[ ! -x "$target_dir/scripts/setup_ssl.sh" ]]; then
+    echo "Missing $target_dir/scripts/setup_ssl.sh"
+    return 1
+  fi
+
+  (cd "$target_dir" && ./scripts/setup_ssl.sh "$target_dir")
+}
+
 start_stack() {
   local target_dir="$1"
   (cd "$target_dir" && docker compose up -d --build)
@@ -177,26 +205,29 @@ primary_menu() {
     echo
     echo "========== Primary Menu =========="
     echo "1) Configure app (.env)"
-    echo "2) Start / restart containers"
-    echo "3) Set Telegram webhook now"
-    echo "4) Full setup (1 -> 2 -> optional 3)"
-    echo "5) Exit"
+    echo "2) Acquire/configure TLS certificate (Let's Encrypt)"
+    echo "3) Start / restart containers"
+    echo "4) Set Telegram webhook now"
+    echo "5) Full setup (1 -> 2 -> 3 -> optional 4)"
+    echo "6) Exit"
 
     local choice
-    choice="$(prompt_value "Select an option" "5")"
+    choice="$(prompt_value "Select an option" "6")"
 
     case "$choice" in
       1) configure_app "$target_dir" ;;
-      2) start_stack "$target_dir" ;;
-      3) set_webhook "$target_dir" ;;
-      4)
+      2) setup_ssl "$target_dir" ;;
+      3) start_stack "$target_dir" ;;
+      4) set_webhook "$target_dir" ;;
+      5)
         configure_app "$target_dir"
+        setup_ssl "$target_dir"
         start_stack "$target_dir"
         if [[ "$(prompt_value "Set Telegram webhook now? (y/n)" "y")" =~ ^[Yy]$ ]]; then
           set_webhook "$target_dir"
         fi
         ;;
-      5) break ;;
+      6) break ;;
       *) echo "Invalid option." ;;
     esac
   done
