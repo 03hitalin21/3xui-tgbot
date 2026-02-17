@@ -64,6 +64,16 @@ prompt_value() {
   printf '%s' "$value"
 }
 
+generate_token() {
+  local length="${1:-32}"
+
+  if command_exists openssl; then
+    openssl rand -hex "$length"
+  else
+    od -An -N"$length" -tx1 /dev/urandom | tr -d ' \n'
+  fi
+}
+
 clone_or_update_repo() {
   local target_dir="$1"
 
@@ -112,19 +122,35 @@ configure_app() {
   XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
   XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
   WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
-  WEBHOOK_PATH="$(prompt_value "Webhook path" "telegram")"
-  PANEL_PORT="$(prompt_value "Public admin panel port" "8080")"
-  BOT_PORT="$(prompt_value "Public bot webhook port" "8443")"
+  WEBHOOK_PATH="telegram/$(generate_token 8)"
+  PANEL_PORT="8080"
+  BOT_PORT="8443"
   ADMIN_TELEGRAM_ID="$(prompt_value "Admin Telegram ID (optional)" "")"
-  ADMIN_WEB_TOKEN="$(prompt_value "Admin web token" "change-me")"
-  WEBHOOK_SECRET_TOKEN="$(prompt_value "Webhook secret token (recommended)" "")"
+  ADMIN_WEB_TOKEN="$(generate_token 24)"
+  WEBHOOK_SECRET_TOKEN="$(generate_token 24)"
+  echo "Generated backend tokens, webhook path, and service ports automatically."
   MAX_PLAN_DAYS="$(prompt_value "MAX_PLAN_DAYS" "365")"
   MAX_PLAN_GB="$(prompt_value "MAX_PLAN_GB" "2000")"
   MAX_BULK_COUNT="$(prompt_value "MAX_BULK_COUNT" "100")"
   mkdir -p "$target_dir/data" "$target_dir/logs"
   write_env_file "$target_dir"
 
+  local admin_panel_base
+  admin_panel_base="${WEBHOOK_BASE_URL%/}"
+  local admin_panel_url="${admin_panel_base}/admin?token=${ADMIN_WEB_TOKEN}"
+  local webhook_url="${admin_panel_base}/${WEBHOOK_PATH#/}"
+
+  echo "export ADMIN_WEB_TOKEN=${ADMIN_WEB_TOKEN}"
+  echo "export WEBHOOK_SECRET_TOKEN=${WEBHOOK_SECRET_TOKEN}"
+  echo "export WEBHOOK_PATH=${WEBHOOK_PATH}"
+  echo "export PANEL_PORT=${PANEL_PORT}"
+  echo "export BOT_PORT=${BOT_PORT}"
+
   echo "✅ Saved configuration to $target_dir/.env"
+  echo "🔐 Admin token: $ADMIN_WEB_TOKEN"
+  echo "🔐 Webhook token: $WEBHOOK_SECRET_TOKEN"
+  echo "🌐 Admin panel URL: $admin_panel_url"
+  echo "🪝 Webhook URL: $webhook_url"
 }
 
 set_webhook() {
