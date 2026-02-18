@@ -40,10 +40,13 @@ services:
       - .env
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./certbot/www:/var/www/certbot
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     command: >-
       /bin/sh -c
-      "envsubst '$$WEBHOOK_PATH' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+      "envsubst '$$WEBHOOK_PATH $$SSL_CERT_PATH $$SSL_KEY_PATH $$LETSENCRYPT_WEBROOT' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
       && nginx -t
       && nginx -g 'daemon off;'"
