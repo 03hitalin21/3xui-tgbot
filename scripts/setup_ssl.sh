@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-acquire}"
 TARGET_DIR="${2:-$(pwd)}"
 
-if [[ "$MODE" != "acquire" && "$MODE" != "check" ]]; then
+if [[ "$MODE" != "acquire" && "$MODE" != "check" && "$MODE" != "renew-install" ]]; then
   TARGET_DIR="${1:-$(pwd)}"
   MODE="acquire"
 fi
@@ -30,10 +30,25 @@ ensure_env_file() {
 }
 
 load_env() {
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *=* ]] || continue
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+
+    key="${key//[[:space:]]/}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+
+    if [[ "$value" =~ ^".*"$ ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" =~ ^'.*'$ ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+
+    export "$key=$value"
+  done < "$ENV_FILE"
 }
 
 write_env_key() {
@@ -55,7 +70,11 @@ install_certbot_if_needed() {
   echo "Installing Certbot..."
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y certbot
+    DEBIAN_FRONTEND=noninteractive apt-get install -y snapd
+    snap install core
+    snap refresh core
+    snap install --classic certbot
+    ln -sf /snap/bin/certbot /usr/bin/certbot
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y certbot
   elif command -v yum >/dev/null 2>&1; then
@@ -91,6 +110,93 @@ show_certificate_status() {
   return 0
 }
 
+stop_nginx_services() {
+  local compose_cmd=(docker compose -f "$TARGET_DIR/docker-compose.yml")
+
+  if command -v docker >/dev/null 2>&1; then
+    "${compose_cmd[@]}" stop nginx >/dev/null 2>&1 || true
+    docker stop nginx >/dev/null 2>&1 || true
+    docker stop tgbot-nginx >/dev/null 2>&1 || true
+  fi
+
+  systemctl stop nginx >/dev/null 2>&1 || true
+}
+
+start_nginx_services() {
+  local compose_cmd=(docker compose -f "$TARGET_DIR/docker-compose.yml")
+
+  if command -v docker >/dev/null 2>&1; then
+    "${compose_cmd[@]}" up -d nginx >/dev/null 2>&1 || true
+  fi
+
+  systemctl start nginx >/dev/null 2>&1 || true
+}
+
+ensure_renewal_job() {
+  local cron_line="0 3 * * * certbot renew --quiet --pre-hook 'bash -lc \"docker compose -f ${TARGET_DIR}/docker-compose.yml stop nginx >/dev/null 2>&1 || docker stop nginx >/dev/null 2>&1 || docker stop tgbot-nginx >/dev/null 2>&1 || systemctl stop nginx >/dev/null 2>&1 || true\"' --post-hook 'bash -lc \"docker compose -f ${TARGET_DIR}/docker-compose.yml up -d nginx >/dev/null 2>&1 || systemctl start nginx >/dev/null 2>&1 || true\"'"
+  local existing
+  existing="$(crontab -l 2>/dev/null || true)"
+
+  if printf '%s\n' "$existing" | grep -Fq "$cron_line"; then
+    echo "✅ Certbot renewal cron already exists."
+    return
+  fi
+
+  {
+    printf '%s\n' "$existing" | sed '/certbot renew --quiet --pre-hook/d'
+    echo "$cron_line"
+  } | crontab -
+
+  echo "✅ Installed nightly certbot renewal cron (03:00) with nginx stop/start hooks."
+}
+
+issue_certificate_standalone() {
+  local domain="$1"
+  local include_www="$2"
+  local email="$3"
+
+  local domains=(-d "$domain")
+  if is_true "$include_www"; then
+    domains+=( -d "www.${domain}" )
+  fi
+
+  echo "Using certbot standalone mode (host port 80)."
+  stop_nginx_services
+
+  certbot certonly \
+    --standalone \
+    "${domains[@]}" \
+    --agree-tos \
+    --email "$email" \
+    --non-interactive \
+    --keep-until-expiring
+
+  start_nginx_services
+}
+
+issue_certificate_webroot() {
+  local domain="$1"
+  local include_www="$2"
+  local email="$3"
+
+  mkdir -p "$CERTBOT_WEBROOT"
+
+  local domains=(-d "$domain")
+  if is_true "$include_www"; then
+    domains+=( -d "www.${domain}" )
+  fi
+
+  echo "Using certbot webroot mode (${CERTBOT_WEBROOT})."
+  certbot certonly \
+    --webroot \
+    -w "$CERTBOT_WEBROOT" \
+    "${domains[@]}" \
+    --agree-tos \
+    --email "$email" \
+    --non-interactive \
+    --keep-until-expiring
+}
+
 ensure_certificates() {
   local domain="$1"
   local include_www="$2"
@@ -103,21 +209,19 @@ ensure_certificates() {
 
   echo "No existing certificate detected for ${domain}. Requesting Let's Encrypt certificate..."
   install_certbot_if_needed
-  mkdir -p "$CERTBOT_WEBROOT"
 
-  local domains=(-d "$domain")
-  if is_true "$include_www"; then
-    domains+=( -d "www.${domain}" )
-  fi
-
-  certbot certonly \
-    --webroot \
-    -w "$CERTBOT_WEBROOT" \
-    "${domains[@]}" \
-    --agree-tos \
-    --email "$email" \
-    --non-interactive \
-    --keep-until-expiring
+  local certbot_mode="${SSL_CERTBOT_MODE:-standalone}"
+  case "$certbot_mode" in
+    standalone)
+      issue_certificate_standalone "$domain" "$include_www" "$email"
+      ;;
+    webroot)
+      issue_certificate_webroot "$domain" "$include_www" "$email"
+      ;;
+    *)
+      fail "Unsupported SSL_CERTBOT_MODE=${certbot_mode}. Use standalone or webroot."
+      ;;
+  esac
 
   show_certificate_status "$domain" || fail "Certificate generation finished but files were not found in /etc/letsencrypt/live/${domain}/"
   echo "✅ SSL certificate issued for ${domain}."
@@ -133,6 +237,7 @@ configure_ssl_env() {
   write_env_key "SSL_CERT_PATH" "/etc/letsencrypt/live/${domain}/fullchain.pem"
   write_env_key "SSL_KEY_PATH" "/etc/letsencrypt/live/${domain}/privkey.pem"
   write_env_key "LETSENCRYPT_WEBROOT" "/var/www/certbot"
+  write_env_key "SSL_CERTBOT_MODE" "${SSL_CERTBOT_MODE:-standalone}"
 
   local webhook_base="https://${domain}"
   write_env_key "WEBHOOK_BASE_URL" "$webhook_base"
@@ -146,6 +251,11 @@ main() {
 
   ensure_env_file
   load_env
+
+  if [[ "$MODE" == "renew-install" ]]; then
+    ensure_renewal_job
+    return
+  fi
 
   local domain="${SSL_DOMAIN:-${3:-}}"
   if [[ -z "$domain" ]]; then
@@ -166,6 +276,7 @@ main() {
   mkdir -p "$CERTBOT_WEBROOT"
   configure_ssl_env "$domain" "$include_www"
   ensure_certificates "$domain" "$include_www" "$email"
+  ensure_renewal_job
 
   echo "You can now (re)start the stack: docker compose up -d --build"
 }
