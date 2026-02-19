@@ -3,7 +3,7 @@
 ## Quick Installation
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New5/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New6/install.sh)
 ```
 
 ## TLS / Telegram Webhook notes
