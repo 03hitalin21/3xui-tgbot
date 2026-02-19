@@ -45,4 +45,10 @@ fi
 
 echo "$response" | grep -q '"ok":true' || fail "Telegram setWebhook failed: $response"
 
+echo "Webhook status:"
+status_response="$(curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
+echo "$status_response"
+echo "$status_response" | grep -q '"ok":true' || fail "Telegram getWebhookInfo failed: $status_response"
+echo "$status_response" | grep -Fq "\"url\":\"${WEBHOOK_URL}\"" || fail "Webhook URL mismatch. Expected ${WEBHOOK_URL}"
+
 echo "✅ Telegram webhook configured successfully."

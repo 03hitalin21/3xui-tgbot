@@ -108,6 +108,7 @@ WEBHOOK_SECRET_TOKEN=$WEBHOOK_SECRET_TOKEN
 SSL_ENABLED=$SSL_ENABLED
 SSL_DOMAIN=$SSL_DOMAIN
 SSL_INCLUDE_WWW=$SSL_INCLUDE_WWW
+SSL_CERTBOT_MODE=$SSL_CERTBOT_MODE
 SSL_CERT_PATH=$SSL_CERT_PATH
 SSL_KEY_PATH=$SSL_KEY_PATH
 LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
@@ -134,6 +135,7 @@ configure_app() {
     WEBHOOK_BASE_URL="https://${SSL_DOMAIN}"
   fi
   SSL_INCLUDE_WWW="$(prompt_value "Include www subdomain in certificate? (true/false)" "true")"
+  SSL_CERTBOT_MODE="standalone"
   LETSENCRYPT_EMAIL="$(prompt_value "Email for Let's Encrypt notices" "")"
   SSL_ENABLED="true"
   SSL_CERT_PATH="/etc/letsencrypt/live/${SSL_DOMAIN}/fullchain.pem"
@@ -215,10 +217,30 @@ run_menu_action() {
   return 1
 }
 
+run_health_check() {
+  local target_dir="$1"
+
+  if [[ ! -x "$target_dir/scripts/health_check.sh" ]]; then
+    echo "Missing $target_dir/scripts/health_check.sh"
+    return 1
+  fi
+
+  (cd "$target_dir" && ./scripts/health_check.sh "$target_dir")
+}
+
 start_stack() {
   local target_dir="$1"
   (cd "$target_dir" && docker compose up -d --build)
   echo "✅ Docker services started."
+
+  if [[ -x "$target_dir/scripts/set_webhook.sh" ]]; then
+    echo "🔄 Auto-registering Telegram webhook..."
+    if (cd "$target_dir" && ./scripts/set_webhook.sh "$target_dir"); then
+      echo "✅ Webhook registration completed."
+    else
+      echo "⚠️ Webhook registration failed. You can retry from the menu (Set Telegram webhook now)."
+    fi
+  fi
 }
 
 primary_menu() {
@@ -232,11 +254,12 @@ primary_menu() {
     echo "3) Check TLS certificate status"
     echo "4) Start / restart containers"
     echo "5) Set Telegram webhook now"
-    echo "6) Full setup (1 -> 2 -> 4 -> optional 5)"
-    echo "7) Exit"
+    echo "6) Run health checks (TLS, containers, nginx, webhook)"
+    echo "7) Full setup (1 -> 2 -> 4 -> 6)"
+    echo "8) Exit"
 
     local choice
-    choice="$(prompt_value "Select an option" "7")"
+    choice="$(prompt_value "Select an option" "8")"
 
     case "$choice" in
       1) run_menu_action "Configure app" configure_app "$target_dir" || true ;;
@@ -244,15 +267,14 @@ primary_menu() {
       3) run_menu_action "TLS certificate status check" check_tls_certificate "$target_dir" || true ;;
       4) run_menu_action "Container startup" start_stack "$target_dir" || true ;;
       5) run_menu_action "Webhook setup" set_webhook "$target_dir" || true ;;
-      6)
+      6) run_menu_action "Health checks" run_health_check "$target_dir" || true ;;
+      7)
         run_menu_action "Configure app" configure_app "$target_dir" || true
         run_menu_action "TLS certificate setup" setup_ssl "$target_dir" || true
         run_menu_action "Container startup" start_stack "$target_dir" || true
-        if [[ "$(prompt_value "Set Telegram webhook now? (y/n)" "y")" =~ ^[Yy]$ ]]; then
-          run_menu_action "Webhook setup" set_webhook "$target_dir" || true
-        fi
+        run_menu_action "Health checks" run_health_check "$target_dir" || true
         ;;
-      7) break ;;
+      8) break ;;
       *) echo "Invalid option." ;;
     esac
   done
