@@ -32,18 +32,27 @@ WEBHOOK_URL="$WEBHOOK_BASE_URL/$WEBHOOK_PATH"
 
 echo "Setting Telegram webhook to: $WEBHOOK_URL"
 
-if [[ -n "${WEBHOOK_SECRET_TOKEN:-}" ]]; then
-  response="$(curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-    --data-urlencode "url=${WEBHOOK_URL}" \
-    --data-urlencode "secret_token=${WEBHOOK_SECRET_TOKEN}" \
-    --data-urlencode "drop_pending_updates=false")"
-else
-  response="$(curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-    --data-urlencode "url=${WEBHOOK_URL}" \
-    --data-urlencode "drop_pending_updates=false")"
-fi
+MAX_RETRIES="${WEBHOOK_SETUP_RETRIES:-10}"
+RETRY_DELAY_SECONDS="${WEBHOOK_SETUP_RETRY_DELAY:-3}"
 
-echo "$response" | grep -q '"ok":true' || fail "Telegram setWebhook failed: $response"
+telegram_set_webhook() {
+  curl -fsS \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${WEBHOOK_URL}"
+}
+
+for attempt in $(seq 1 "$MAX_RETRIES"); do
+  response="$(telegram_set_webhook || true)"
+  if echo "$response" | grep -q '"ok":true'; then
+    break
+  fi
+
+  echo "Attempt ${attempt}/${MAX_RETRIES} failed while calling setWebhook."
+  if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
+    sleep "$RETRY_DELAY_SECONDS"
+  fi
+done
+
+echo "$response" | grep -q '"ok":true' || fail "Telegram setWebhook failed after ${MAX_RETRIES} attempts: $response"
 
 echo "Webhook status:"
 status_response="$(curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
