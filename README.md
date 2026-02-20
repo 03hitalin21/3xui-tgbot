@@ -25,8 +25,8 @@ Suggested flow from installer menu:
 4. `Start / restart containers` (auto-runs webhook registration)
 5. `Run health checks (TLS, containers, nginx, webhook)`
 
-For your domain (`mehrsway.space` + optional `www.mehrsway.space`), set:
+For any domain or subdomain (for example `bot.example.com` or `example.com`), set:
 
-- `SSL_DOMAIN=mehrsway.space`
-- `SSL_INCLUDE_WWW=true`
-- `WEBHOOK_BASE_URL=https://mehrsway.space`
+- `SSL_DOMAIN=bot.example.com`
+- `SSL_INCLUDE_WWW=false` (set to `true` only if `www.<domain>` DNS also points to this server)
+- `WEBHOOK_BASE_URL=https://bot.example.com`

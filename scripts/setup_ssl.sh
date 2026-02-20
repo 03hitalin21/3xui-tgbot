@@ -267,7 +267,7 @@ main() {
     return
   fi
 
-  local include_www="${SSL_INCLUDE_WWW:-true}"
+  local include_www="${SSL_INCLUDE_WWW:-false}"
   local email="${LETSENCRYPT_EMAIL:-}"
   if [[ -z "$email" ]]; then
     fail "LETSENCRYPT_EMAIL is required in .env for certificate issuance/renewal notices."

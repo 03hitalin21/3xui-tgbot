@@ -130,11 +130,11 @@ configure_app() {
   XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
   XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
   WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
-  SSL_DOMAIN="$(prompt_value "Primary domain for TLS (e.g. mehrsway.space)" "")"
+  SSL_DOMAIN="$(prompt_value "Primary domain for TLS (e.g. bot.example.com or example.com)" "")"
   if [[ -z "${WEBHOOK_BASE_URL}" && -n "${SSL_DOMAIN}" ]]; then
     WEBHOOK_BASE_URL="https://${SSL_DOMAIN}"
   fi
-  SSL_INCLUDE_WWW="$(prompt_value "Include www subdomain in certificate? (true/false)" "true")"
+  SSL_INCLUDE_WWW="$(prompt_value "Include www.<domain> in certificate? Set true only if DNS exists (true/false)" "false")"
   SSL_CERTBOT_MODE="standalone"
   LETSENCRYPT_EMAIL="$(prompt_value "Email for Let's Encrypt notices" "")"
   SSL_ENABLED="true"
