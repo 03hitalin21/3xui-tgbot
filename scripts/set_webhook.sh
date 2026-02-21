@@ -9,16 +9,74 @@ fail() {
   exit 1
 }
 
+warn() {
+  echo "⚠️ $*" >&2
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
-[[ -f "$ENV_FILE" ]] || fail "Missing env file: $ENV_FILE"
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+strip_wrapping_quotes() {
+  local value="$1"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value:1:-1}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value:1:-1}"
+  fi
+  printf '%s' "$value"
+}
+
+load_env_file() {
+  local file_path="$1"
+  local line
+  local key
+  local value
+  local pending_key=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim_whitespace "$line")"
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+    if [[ -n "$pending_key" && "$line" != *=* ]]; then
+      value="$(strip_wrapping_quotes "$line")"
+      printf -v "$pending_key" '%s' "$value"
+      pending_key=""
+      continue
+    fi
+
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="$(trim_whitespace "$line")"
+    fi
+
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      value="$(strip_wrapping_quotes "$value")"
+      printf -v "$key" '%s' "$value"
+
+      if [[ "$key" == "TELEGRAM_BOT_TOKEN" && -z "$value" ]]; then
+        pending_key="$key"
+      else
+        pending_key=""
+      fi
+      continue
+    fi
+
+    warn "Ignoring malformed .env line: $line"
+  done < "$file_path"
+}
+
+[[ -f "$ENV_FILE" ]] || fail "Missing env file: $ENV_FILE"
+load_env_file "$ENV_FILE"
 
 require_cmd curl
 
@@ -36,9 +94,16 @@ MAX_RETRIES="${WEBHOOK_SETUP_RETRIES:-10}"
 RETRY_DELAY_SECONDS="${WEBHOOK_SETUP_RETRY_DELAY:-3}"
 
 telegram_set_webhook() {
-  curl -fsS -X POST \
-    -d "url=${WEBHOOK_URL}" \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  if [[ -n "${WEBHOOK_SECRET_TOKEN:-}" ]]; then
+    curl -fsS -X POST \
+      -d "url=${WEBHOOK_URL}" \
+      -d "secret_token=${WEBHOOK_SECRET_TOKEN}" \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  else
+    curl -fsS -X POST \
+      -d "url=${WEBHOOK_URL}" \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  fi
 }
 
 for attempt in $(seq 1 "$MAX_RETRIES"); do

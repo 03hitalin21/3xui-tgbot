@@ -12,11 +12,69 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { err "Required command not found: $1"; return 1; }
 }
 
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_wrapping_quotes() {
+  local value="$1"
+  local first_char
+  local last_char
+
+  if [[ ${#value} -ge 2 ]]; then
+    first_char="${value:0:1}"
+    last_char="${value: -1}"
+    if [[ "$first_char" == '"' && "$last_char" == '"' ]]; then
+      value="${value:1:-1}"
+    elif [[ "$first_char" == "'" && "$last_char" == "'" ]]; then
+      value="${value:1:-1}"
+    fi
+  fi
+
+  printf '%s' "$value"
+}
+
 load_env() {
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  local line
+  local key
+  local value
+  local pending_key=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim_whitespace "$line")"
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+    if [[ -n "$pending_key" && "$line" != *=* ]]; then
+      value="$(strip_wrapping_quotes "$line")"
+      printf -v "$pending_key" '%s' "$value"
+      pending_key=""
+      continue
+    fi
+
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="$(trim_whitespace "$line")"
+    fi
+
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      value="$(strip_wrapping_quotes "$value")"
+      printf -v "$key" '%s' "$value"
+
+      if [[ "$key" == "TELEGRAM_BOT_TOKEN" && -z "$value" ]]; then
+        pending_key="$key"
+      else
+        pending_key=""
+      fi
+      continue
+    fi
+
+    warn "Ignoring malformed .env line: $line"
+  done < "$ENV_FILE"
 }
 
 main() {
