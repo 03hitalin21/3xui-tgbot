@@ -94,9 +94,16 @@ MAX_RETRIES="${WEBHOOK_SETUP_RETRIES:-10}"
 RETRY_DELAY_SECONDS="${WEBHOOK_SETUP_RETRY_DELAY:-3}"
 
 telegram_set_webhook() {
-  curl -fsS -X POST \
-    -d "url=${WEBHOOK_URL}" \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  if [[ -n "${WEBHOOK_SECRET_TOKEN:-}" ]]; then
+    curl -fsS -X POST \
+      -d "url=${WEBHOOK_URL}" \
+      -d "secret_token=${WEBHOOK_SECRET_TOKEN}" \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  else
+    curl -fsS -X POST \
+      -d "url=${WEBHOOK_URL}" \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+  fi
 }
 
 for attempt in $(seq 1 "$MAX_RETRIES"); do
