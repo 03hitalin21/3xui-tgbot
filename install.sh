@@ -14,34 +14,32 @@ require_root_or_sudo() {
   elif command_exists sudo; then
     SUDO="sudo"
   else
-    echo "This installer needs root privileges to install Docker. Please run as root."
+    echo "This installer needs root privileges to install packages and configure nginx. Please run as root."
     exit 1
   fi
 }
 
-install_docker_if_missing() {
-  if command_exists docker; then
-    echo "Docker is already installed."
-    return
-  fi
-
-  echo "Docker not found. Installing Docker..."
-  curl -fsSL https://get.docker.com | sh
-
-  if [[ -n "${SUDO:-}" && "${USER}" != "root" ]]; then
-    ${SUDO} usermod -aG docker "${USER}" || true
+install_runtime_if_missing() {
+  if command_exists apt-get; then
+    ${SUDO:-} apt-get update
+    ${SUDO:-} apt-get install -y python3 python3-venv python3-pip nginx gettext-base curl git
+  elif command_exists dnf; then
+    ${SUDO:-} dnf install -y python3 python3-pip nginx gettext curl git
+  elif command_exists yum; then
+    ${SUDO:-} yum install -y python3 python3-pip nginx gettext curl git
+  else
+    echo "Unsupported package manager. Install python3, pip, nginx, gettext, curl and git manually."
+    exit 1
   fi
 }
 
-install_compose_if_missing() {
-  if docker compose version >/dev/null 2>&1; then
-    echo "Docker Compose plugin is already available."
-    return
+prepare_venv() {
+  local target_dir="$1"
+  if [[ ! -d "$target_dir/.venv" ]]; then
+    python3 -m venv "$target_dir/.venv"
   fi
-
-  echo "Docker Compose plugin not found. Installing plugin..."
-  ${SUDO:-} apt-get update
-  ${SUDO:-} apt-get install -y docker-compose-plugin
+  "$target_dir/.venv/bin/pip" install --upgrade pip
+  "$target_dir/.venv/bin/pip" install -r "$target_dir/requirements.txt"
 }
 
 prompt_value() {
@@ -182,7 +180,6 @@ set_webhook() {
   (cd "$target_dir" && ./scripts/set_webhook.sh "$target_dir")
 }
 
-
 setup_ssl() {
   local target_dir="$1"
 
@@ -230,8 +227,11 @@ run_health_check() {
 
 start_stack() {
   local target_dir="$1"
-  (cd "$target_dir" && docker compose up -d --build)
-  echo "✅ Docker services started."
+
+  prepare_venv "$target_dir"
+  (cd "$target_dir" && ./scripts/manage_services.sh restart "$target_dir")
+  (cd "$target_dir" && ./scripts/configure_nginx.sh "$target_dir")
+  echo "✅ Host services started (bot/admin/nginx)."
 
   if [[ -x "$target_dir/scripts/set_webhook.sh" ]]; then
     echo "🔄 Auto-registering Telegram webhook..."
@@ -252,9 +252,9 @@ primary_menu() {
     echo "1) Configure app (.env)"
     echo "2) Acquire/configure TLS certificate (Let's Encrypt)"
     echo "3) Check TLS certificate status"
-    echo "4) Start / restart containers"
+    echo "4) Start / restart host services"
     echo "5) Set Telegram webhook now"
-    echo "6) Run health checks (TLS, containers, nginx, webhook)"
+    echo "6) Run health checks (TLS, services, nginx, webhook)"
     echo "7) Full setup (1 -> 2 -> 4 -> 6)"
     echo "8) Exit"
 
@@ -265,13 +265,13 @@ primary_menu() {
       1) run_menu_action "Configure app" configure_app "$target_dir" || true ;;
       2) run_menu_action "TLS certificate setup" setup_ssl "$target_dir" || true ;;
       3) run_menu_action "TLS certificate status check" check_tls_certificate "$target_dir" || true ;;
-      4) run_menu_action "Container startup" start_stack "$target_dir" || true ;;
+      4) run_menu_action "Service startup" start_stack "$target_dir" || true ;;
       5) run_menu_action "Webhook setup" set_webhook "$target_dir" || true ;;
       6) run_menu_action "Health checks" run_health_check "$target_dir" || true ;;
       7)
         run_menu_action "Configure app" configure_app "$target_dir" || true
         run_menu_action "TLS certificate setup" setup_ssl "$target_dir" || true
-        run_menu_action "Container startup" start_stack "$target_dir" || true
+        run_menu_action "Service startup" start_stack "$target_dir" || true
         run_menu_action "Health checks" run_health_check "$target_dir" || true
         ;;
       8) break ;;
@@ -282,8 +282,7 @@ primary_menu() {
 
 main() {
   require_root_or_sudo
-  install_docker_if_missing
-  install_compose_if_missing
+  install_runtime_if_missing
 
   local target_dir
   target_dir="$(prompt_value "Install directory" "$TARGET_DIR_DEFAULT")"

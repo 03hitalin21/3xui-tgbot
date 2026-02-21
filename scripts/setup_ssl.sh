@@ -111,29 +111,15 @@ show_certificate_status() {
 }
 
 stop_nginx_services() {
-  local compose_cmd=(docker compose -f "$TARGET_DIR/docker-compose.yml")
-
-  if command -v docker >/dev/null 2>&1; then
-    "${compose_cmd[@]}" stop nginx >/dev/null 2>&1 || true
-    docker stop nginx >/dev/null 2>&1 || true
-    docker stop tgbot-nginx >/dev/null 2>&1 || true
-  fi
-
   systemctl stop nginx >/dev/null 2>&1 || true
 }
 
 start_nginx_services() {
-  local compose_cmd=(docker compose -f "$TARGET_DIR/docker-compose.yml")
-
-  if command -v docker >/dev/null 2>&1; then
-    "${compose_cmd[@]}" up -d nginx >/dev/null 2>&1 || true
-  fi
-
   systemctl start nginx >/dev/null 2>&1 || true
 }
 
 ensure_renewal_job() {
-  local cron_line="0 3 * * * certbot renew --quiet --pre-hook 'bash -lc \"docker compose -f ${TARGET_DIR}/docker-compose.yml stop nginx >/dev/null 2>&1 || docker stop nginx >/dev/null 2>&1 || docker stop tgbot-nginx >/dev/null 2>&1 || systemctl stop nginx >/dev/null 2>&1 || true\"' --post-hook 'bash -lc \"docker compose -f ${TARGET_DIR}/docker-compose.yml up -d nginx >/dev/null 2>&1 || systemctl start nginx >/dev/null 2>&1 || true\"'"
+  local cron_line="0 3 * * * certbot renew --quiet --pre-hook 'systemctl stop nginx >/dev/null 2>&1 || true' --post-hook 'systemctl start nginx >/dev/null 2>&1 || true'"
   local existing
   existing="$(crontab -l 2>/dev/null || true)"
 
@@ -278,7 +264,7 @@ main() {
   ensure_certificates "$domain" "$include_www" "$email"
   ensure_renewal_job
 
-  echo "You can now (re)start the stack: docker compose up -d --build"
+  echo "You can now (re)start services from installer menu option 4."
 }
 
 main "$@"

@@ -82,7 +82,6 @@ main() {
 
   [[ -f "$ENV_FILE" ]] || { err "Missing env file: $ENV_FILE"; exit 1; }
 
-  require_cmd docker || failed=$((failed + 1))
   require_cmd curl || failed=$((failed + 1))
   load_env
 
@@ -95,20 +94,22 @@ main() {
     failed=$((failed + 1))
   fi
 
-  if (cd "$TARGET_DIR" && docker compose ps >/tmp/tgbot-compose-ps.txt 2>/tmp/tgbot-compose-ps.err); then
-    ok "docker compose ps succeeded."
-    if grep -Eq "tgbot-(bot|admin|nginx)|\b(bot|admin-web|nginx)\b" /tmp/tgbot-compose-ps.txt; then
-      ok "Compose services are visible."
+  if [[ -x "$TARGET_DIR/scripts/manage_services.sh" ]]; then
+    if service_status="$(cd "$TARGET_DIR" && ./scripts/manage_services.sh status 2>&1)"; then
+      ok "Local bot/admin services status check succeeded."
+      printf '%s
+' "$service_status"
     else
-      warn "Compose output did not include expected service names."
+      err "Local bot/admin services status check failed: $service_status"
+      failed=$((failed + 1))
     fi
   else
-    err "docker compose ps failed: $(cat /tmp/tgbot-compose-ps.err)"
+    err "Missing $TARGET_DIR/scripts/manage_services.sh"
     failed=$((failed + 1))
   fi
 
-  if (cd "$TARGET_DIR" && docker compose exec -T nginx nginx -t >/tmp/tgbot-nginx-test.txt 2>/tmp/tgbot-nginx-test.err); then
-    ok "Nginx configuration test passed in container."
+  if nginx -t >/tmp/tgbot-nginx-test.txt 2>/tmp/tgbot-nginx-test.err; then
+    ok "Nginx configuration test passed."
   else
     err "Nginx configuration test failed: $(cat /tmp/tgbot-nginx-test.err)"
     failed=$((failed + 1))
