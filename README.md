@@ -13,7 +13,7 @@ It includes:
 ## Quick install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/HEAD/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New9/install.sh)
 ```
 
 The installer:
