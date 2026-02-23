@@ -132,6 +132,12 @@ main() {
         warn "Webhook URL does not match expected value (${expected_webhook})."
         warn "Current info: $webhook_json"
       fi
+
+      last_error_message="$(printf '%s' "$webhook_json" | sed -n 's/.*"last_error_message":"\([^"]*\)".*/\1/p')"
+      if [[ -n "$last_error_message" ]]; then
+        err "Telegram webhook reports runtime error: ${last_error_message}"
+        failed=$((failed + 1))
+      fi
     else
       err "Failed to query Telegram webhook info: $(cat /tmp/tgbot-webhook.err)"
       failed=$((failed + 1))

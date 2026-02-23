@@ -62,6 +62,13 @@ prompt_value() {
   printf '%s' "$value"
 }
 
+
+sanitize_env_value() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr -d '\r\n')"
+  printf '%s' "$value"
+}
+
 generate_token() {
   local length="${1:-32}"
 
@@ -122,16 +129,23 @@ configure_app() {
 
   echo
   echo "--- 3xui Telegram Bot Configuration ---"
-  TELEGRAM_BOT_TOKEN="$(prompt_value "Telegram Bot Token" "" true)"
-  XUI_BASE_URL="$(prompt_value "XUI Panel Base URL (e.g. https://panel.example.com:2053/panel)" "")"
-  XUI_USERNAME="$(prompt_value "XUI Username" "admin")"
-  XUI_PASSWORD="$(prompt_value "XUI Password" "admin" true)"
-  XUI_SERVER_HOST="$(prompt_value "XUI Server Host/IP" "127.0.0.1")"
-  WEBHOOK_BASE_URL="$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")"
-  SSL_DOMAIN="$(prompt_value "Primary domain for TLS (e.g. bot.example.com or example.com)" "")"
+  TELEGRAM_BOT_TOKEN="$(sanitize_env_value "$(prompt_value "Telegram Bot Token" "" true)")"
+  XUI_BASE_URL="$(sanitize_env_value "$(prompt_value "XUI Panel Base URL (e.g. https://panel.example.com:2053/panel)" "")")"
+  XUI_USERNAME="$(sanitize_env_value "$(prompt_value "XUI Username" "admin")")"
+  XUI_PASSWORD="$(sanitize_env_value "$(prompt_value "XUI Password" "admin" true)")"
+  XUI_SERVER_HOST="$(sanitize_env_value "$(prompt_value "XUI Server Host/IP" "127.0.0.1")")"
+  WEBHOOK_BASE_URL="$(sanitize_env_value "$(prompt_value "Public webhook base URL (e.g. https://bot.example.com)" "")")"
+  SSL_DOMAIN="$(sanitize_env_value "$(prompt_value "Primary domain for TLS (e.g. bot.example.com or example.com)" "")")"
   if [[ -z "${WEBHOOK_BASE_URL}" && -n "${SSL_DOMAIN}" ]]; then
     WEBHOOK_BASE_URL="https://${SSL_DOMAIN}"
   fi
+
+  [[ -n "$TELEGRAM_BOT_TOKEN" ]] || { echo "Telegram Bot Token cannot be empty."; return 1; }
+  [[ -n "$XUI_BASE_URL" ]] || { echo "XUI_BASE_URL cannot be empty."; return 1; }
+  [[ -n "$XUI_USERNAME" ]] || { echo "XUI_USERNAME cannot be empty."; return 1; }
+  [[ -n "$XUI_PASSWORD" ]] || { echo "XUI_PASSWORD cannot be empty."; return 1; }
+  [[ -n "$XUI_SERVER_HOST" ]] || { echo "XUI_SERVER_HOST cannot be empty."; return 1; }
+  [[ -n "$SSL_DOMAIN" ]] || { echo "SSL_DOMAIN cannot be empty."; return 1; }
   SSL_INCLUDE_WWW="$(prompt_value "Include www.<domain> in certificate? Set true only if DNS exists (true/false)" "false")"
   SSL_CERTBOT_MODE="standalone"
   LETSENCRYPT_EMAIL="$(prompt_value "Email for Let's Encrypt notices" "")"

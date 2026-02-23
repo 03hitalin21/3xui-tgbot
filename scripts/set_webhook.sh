@@ -75,6 +75,40 @@ load_env_file() {
   done < "$file_path"
 }
 
+wait_for_webhook_endpoint() {
+  local retries="${WEBHOOK_HEALTH_RETRIES:-10}"
+  local delay_seconds="${WEBHOOK_HEALTH_RETRY_DELAY:-3}"
+  local attempt
+  local code
+
+  for attempt in $(seq 1 "$retries"); do
+    if code="$(curl -k -sS -o /dev/null -w "%{http_code}" -X POST "$WEBHOOK_URL")"; then
+      :
+    else
+      code="000"
+    fi
+    case "$code" in
+      200|400|401|403|404|405)
+        echo "✅ Webhook endpoint is reachable (HTTP $code)."
+        return 0
+        ;;
+      502|503|504|000)
+        echo "Attempt ${attempt}/${retries}: webhook endpoint not ready (HTTP $code)."
+        ;;
+      *)
+        echo "Attempt ${attempt}/${retries}: webhook endpoint responded with HTTP $code (continuing)."
+        ;;
+    esac
+
+    if [[ "$attempt" -lt "$retries" ]]; then
+      sleep "$delay_seconds"
+    fi
+  done
+
+  warn "Webhook endpoint did not become healthy after ${retries} attempts. Telegram may report 502 until backend is ready."
+  return 1
+}
+
 [[ -f "$ENV_FILE" ]] || fail "Missing env file: $ENV_FILE"
 load_env_file "$ENV_FILE"
 
@@ -92,6 +126,8 @@ echo "Setting Telegram webhook to: $WEBHOOK_URL"
 
 MAX_RETRIES="${WEBHOOK_SETUP_RETRIES:-10}"
 RETRY_DELAY_SECONDS="${WEBHOOK_SETUP_RETRY_DELAY:-3}"
+
+wait_for_webhook_endpoint || true
 
 telegram_set_webhook() {
   if [[ -n "${WEBHOOK_SECRET_TOKEN:-}" ]]; then
@@ -125,5 +161,10 @@ status_response="$(curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/
 echo "$status_response"
 echo "$status_response" | grep -q '"ok":true' || fail "Telegram getWebhookInfo failed: $status_response"
 echo "$status_response" | grep -Fq "\"url\":\"${WEBHOOK_URL}\"" || fail "Webhook URL mismatch. Expected ${WEBHOOK_URL}"
+
+last_error_message="$(printf '%s' "$status_response" | sed -n 's/.*"last_error_message":"\([^"]*\)".*/\1/p')"
+if [[ -n "$last_error_message" ]]; then
+  fail "Telegram webhook is set but not healthy yet (last_error_message: $last_error_message). Check DNS/firewall/nginx/bot and rerun option 5."
+fi
 
 echo "✅ Telegram webhook configured successfully."
