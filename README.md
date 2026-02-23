@@ -13,7 +13,7 @@ It includes:
 ## Quick install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New8/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/HEAD/install.sh)
 ```
 
 The installer:
@@ -127,6 +127,31 @@ Ensure these match:
 tail -n 100 logs/bot.log
 tail -n 100 logs/admin_web.log
 journalctl -u nginx -n 100 --no-pager
+```
+
+### 7) If bot crashes with PTB webhook RuntimeError
+
+If `logs/bot.log` contains:
+`RuntimeError: To use start_webhook, PTB must be installed via pip install "python-telegram-bot[webhooks]"`
+
+install webhook extras into the app venv, then restart:
+
+```bash
+.venv/bin/pip install -r requirements.txt
+./scripts/manage_services.sh restart
+./scripts/set_webhook.sh
+```
+
+### 8) If `getWebhookInfo` still shows an old `last_error_message`
+
+Telegram may keep the previous webhook delivery error for a short time even after the endpoint becomes reachable.
+
+If `./scripts/set_webhook.sh` reports endpoint reachable (HTTP 200/4xx) and webhook URL matches, treat older
+`last_error_date` as stale and retry once after a short delay:
+
+```bash
+sleep 10
+./scripts/set_webhook.sh
 ```
 
 ---

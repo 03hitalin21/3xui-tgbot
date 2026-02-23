@@ -127,7 +127,11 @@ echo "Setting Telegram webhook to: $WEBHOOK_URL"
 MAX_RETRIES="${WEBHOOK_SETUP_RETRIES:-10}"
 RETRY_DELAY_SECONDS="${WEBHOOK_SETUP_RETRY_DELAY:-3}"
 
-wait_for_webhook_endpoint || true
+SETUP_START_TS="$(date +%s)"
+endpoint_reachable_now=0
+if wait_for_webhook_endpoint; then
+  endpoint_reachable_now=1
+fi
 
 telegram_set_webhook() {
   if [[ -n "${WEBHOOK_SECRET_TOKEN:-}" ]]; then
@@ -163,8 +167,15 @@ echo "$status_response" | grep -q '"ok":true' || fail "Telegram getWebhookInfo f
 echo "$status_response" | grep -Fq "\"url\":\"${WEBHOOK_URL}\"" || fail "Webhook URL mismatch. Expected ${WEBHOOK_URL}"
 
 last_error_message="$(printf '%s' "$status_response" | sed -n 's/.*"last_error_message":"\([^"]*\)".*/\1/p')"
+last_error_date="$(printf '%s' "$status_response" | sed -n 's/.*"last_error_date":\([0-9][0-9]*\).*/\1/p')"
+
 if [[ -n "$last_error_message" ]]; then
-  fail "Telegram webhook is set but not healthy yet (last_error_message: $last_error_message). Check DNS/firewall/nginx/bot and rerun option 5."
+  if [[ "$endpoint_reachable_now" -eq 1 && -n "$last_error_date" && "$last_error_date" -lt "$SETUP_START_TS" ]]; then
+    warn "Telegram reports stale last_error_message from an earlier attempt: ${last_error_message} (last_error_date=${last_error_date})."
+    warn "Endpoint is reachable now and webhook URL is set; continuing."
+  else
+    fail "Telegram webhook is set but not healthy yet (last_error_message: $last_error_message). Check DNS/firewall/nginx/bot and rerun option 5."
+  fi
 fi
 
 echo "✅ Telegram webhook configured successfully."
