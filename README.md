@@ -56,6 +56,12 @@ At minimum:
 - `WEBHOOK_BASE_URL`
 - `SSL_DOMAIN`
 - `LETSENCRYPT_EMAIL`
+1. Configuring domain/email values in `.env`.
+2. Reusing existing certificates from `/etc/letsencrypt/live/<domain>/`.
+3. Issuing a new Let's Encrypt certificate via Certbot (`standalone` by default, `webroot` optional via `SSL_CERTBOT_MODE=webroot`) when no certificate exists. On apt-based hosts, Certbot is installed with snap.
+4. Running Nginx on `80/443` with HTTP -> HTTPS redirect and ACME challenge handling.
+5. Installing nightly certificate renewal automation with Nginx stop/start hooks.
+6. Auto-registering Telegram webhook after host services startup + one-command health checks.
 
 Also important:
 - `WEBHOOK_PATH` (default: `telegram/<random>` from installer)
