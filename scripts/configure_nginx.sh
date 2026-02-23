@@ -27,12 +27,13 @@ set +a
 : "${SSL_CERT_PATH:?SSL_CERT_PATH is required in .env}"
 : "${SSL_KEY_PATH:?SSL_KEY_PATH is required in .env}"
 : "${LETSENCRYPT_WEBROOT:?LETSENCRYPT_WEBROOT is required in .env}"
+WEBHOOK_PORT="${WEBHOOK_PORT:-8443}"
 ADMIN_WEB_PORT="${ADMIN_WEB_PORT:-8080}"
 
 require_cmd envsubst
 require_cmd nginx
 
-envsubst '$WEBHOOK_PATH $SSL_CERT_PATH $SSL_KEY_PATH $LETSENCRYPT_WEBROOT $ADMIN_WEB_PORT' < "$TEMPLATE_FILE" > "$OUT_FILE"
+envsubst '$WEBHOOK_PATH $SSL_CERT_PATH $SSL_KEY_PATH $LETSENCRYPT_WEBROOT $WEBHOOK_PORT $ADMIN_WEB_PORT' < "$TEMPLATE_FILE" > "$OUT_FILE"
 nginx -t
 systemctl enable nginx >/dev/null 2>&1 || true
 systemctl restart nginx

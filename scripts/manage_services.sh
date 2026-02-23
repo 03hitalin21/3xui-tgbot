@@ -70,6 +70,7 @@ load_env_file() {
       value="${BASH_REMATCH[2]}"
       value="$(strip_wrapping_quotes "$value")"
       printf -v "$key" '%s' "$value"
+      export "$key"
 
       if [[ "$key" == "TELEGRAM_BOT_TOKEN" && -z "$value" ]]; then
         pending_key="$key"
