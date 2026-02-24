@@ -8,6 +8,9 @@ BOT_PID_FILE="$TARGET_DIR/.bot.pid"
 ADMIN_PID_FILE="$TARGET_DIR/.admin.pid"
 BOT_LOG_FILE="$TARGET_DIR/logs/bot.log"
 ADMIN_LOG_FILE="$TARGET_DIR/logs/admin_web.log"
+SYSTEMD_SCRIPT="$TARGET_DIR/scripts/setup_systemd.sh"
+SYSTEMD_BOT_UNIT="3xui-tgbot-bot.service"
+SYSTEMD_ADMIN_UNIT="3xui-tgbot-admin.service"
 
 fail() {
   echo "❌ $*" >&2
@@ -16,6 +19,18 @@ fail() {
 
 warn() {
   echo "⚠️ $*" >&2
+}
+
+systemd_units_exist() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$SYSTEMD_BOT_UNIT" || return 1
+  systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$SYSTEMD_ADMIN_UNIT"
+}
+
+run_systemd_action() {
+  local action="$1"
+  [[ -x "$SYSTEMD_SCRIPT" ]] || fail "Missing systemd helper script: $SYSTEMD_SCRIPT"
+  "$SYSTEMD_SCRIPT" "$action" "$TARGET_DIR"
 }
 
 trim_whitespace() {
@@ -152,17 +167,37 @@ status_services() {
 }
 
 case "${1:-}" in
-  start) start_services ;;
+  start)
+    if systemd_units_exist; then
+      run_systemd_action restart
+    else
+      start_services
+    fi
+    ;;
   stop)
-    stop_one "telegram_bot.py" "$BOT_PID_FILE"
-    stop_one "admin_web.py" "$ADMIN_PID_FILE"
-    echo "✅ Bot/Admin services stopped."
+    if systemd_units_exist; then
+      run_systemd_action stop
+    else
+      stop_one "telegram_bot.py" "$BOT_PID_FILE"
+      stop_one "admin_web.py" "$ADMIN_PID_FILE"
+      echo "✅ Bot/Admin services stopped."
+    fi
     ;;
   restart)
-    "$0" stop "$TARGET_DIR"
-    "$0" start "$TARGET_DIR"
+    if systemd_units_exist; then
+      run_systemd_action restart
+    else
+      "$0" stop "$TARGET_DIR"
+      "$0" start "$TARGET_DIR"
+    fi
     ;;
-  status) status_services ;;
+  status)
+    if systemd_units_exist; then
+      run_systemd_action status
+    else
+      status_services
+    fi
+    ;;
   *)
     echo "Usage: $0 {start|stop|restart|status} [target_dir]"
     exit 1

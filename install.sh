@@ -22,13 +22,13 @@ require_root_or_sudo() {
 install_runtime_if_missing() {
   if command_exists apt-get; then
     ${SUDO:-} apt-get update
-    ${SUDO:-} apt-get install -y python3 python3-venv python3-pip nginx gettext-base curl git
+    ${SUDO:-} apt-get install -y python3 python3-venv python3-pip nginx gettext-base curl git systemd
   elif command_exists dnf; then
-    ${SUDO:-} dnf install -y python3 python3-pip nginx gettext curl git
+    ${SUDO:-} dnf install -y python3 python3-pip nginx gettext curl git systemd
   elif command_exists yum; then
-    ${SUDO:-} yum install -y python3 python3-pip nginx gettext curl git
+    ${SUDO:-} yum install -y python3 python3-pip nginx gettext curl git systemd
   else
-    echo "Unsupported package manager. Install python3, pip, nginx, gettext, curl and git manually."
+    echo "Unsupported package manager. Install python3, pip, nginx, gettext, curl, git and systemd manually."
     exit 1
   fi
 }
@@ -228,6 +228,23 @@ run_menu_action() {
   return 1
 }
 
+
+setup_systemd_services() {
+  local target_dir="$1"
+
+  if [[ ! -x "$target_dir/scripts/setup_systemd.sh" ]]; then
+    echo "Missing $target_dir/scripts/setup_systemd.sh"
+    return 1
+  fi
+
+  if ! command_exists systemctl; then
+    echo "⚠️ systemd/systemctl not available. Falling back to script-based process management."
+    return 1
+  fi
+
+  (cd "$target_dir" && ./scripts/setup_systemd.sh install "$target_dir")
+}
+
 run_health_check() {
   local target_dir="$1"
 
@@ -243,7 +260,12 @@ start_stack() {
   local target_dir="$1"
 
   prepare_venv "$target_dir"
-  (cd "$target_dir" && ./scripts/manage_services.sh restart "$target_dir")
+  if run_menu_action "Systemd integration" setup_systemd_services "$target_dir"; then
+    echo "✅ Bot/Admin services are running under systemd supervision."
+  else
+    (cd "$target_dir" && ./scripts/manage_services.sh restart "$target_dir")
+    echo "⚠️ Bot/Admin started without systemd supervision (fallback mode)."
+  fi
   (cd "$target_dir" && ./scripts/configure_nginx.sh "$target_dir")
   echo "✅ Host services started (bot/admin/nginx)."
 
@@ -266,7 +288,7 @@ primary_menu() {
     echo "1) Configure app (.env)"
     echo "2) Acquire/configure TLS certificate (Let's Encrypt)"
     echo "3) Check TLS certificate status"
-    echo "4) Start / restart host services"
+    echo "4) Start / restart host services (systemd if available)"
     echo "5) Set Telegram webhook now"
     echo "6) Run health checks (TLS, services, nginx, webhook)"
     echo "7) Full setup (1 -> 2 -> 4 -> 6)"

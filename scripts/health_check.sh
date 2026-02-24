@@ -94,11 +94,19 @@ main() {
     failed=$((failed + 1))
   fi
 
-  if [[ -x "$TARGET_DIR/scripts/manage_services.sh" ]]; then
+  if command -v systemctl >/dev/null 2>&1 \
+    && systemctl list-unit-files | grep -q '^3xui-tgbot-bot.service'; then
+    if systemctl is-active --quiet 3xui-tgbot-bot.service \
+      && systemctl is-active --quiet 3xui-tgbot-admin.service; then
+      ok "Systemd bot/admin services are active."
+    else
+      err "Systemd bot/admin services are not active."
+      failed=$((failed + 1))
+    fi
+  elif [[ -x "$TARGET_DIR/scripts/manage_services.sh" ]]; then
     if service_status="$(cd "$TARGET_DIR" && ./scripts/manage_services.sh status 2>&1)"; then
       ok "Local bot/admin services status check succeeded."
-      printf '%s
-' "$service_status"
+      printf '%s\n' "$service_status"
     else
       err "Local bot/admin services status check failed: $service_status"
       failed=$((failed + 1))
