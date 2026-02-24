@@ -13,7 +13,7 @@ Minimal Telegram bot + admin panel integration for 3xui.
 ## Quick Start
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New9/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New10/install.sh)
 ```
 
 ## Environment
