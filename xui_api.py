@@ -17,21 +17,29 @@ class XUIApi:
         self.s.verify = False
 
     def login(self) -> None:
-        r = self.s.post(f"{BASE_URL}/login", data={"username": USERNAME, "password": PASSWORD}, timeout=20)
+        r = self.s.post(f"{BASE_URL}/login", data={"username": USERNAME, "password": PASSWORD}, timeout=10)
         if r.status_code != 200:
             raise RuntimeError("x-ui login failed")
 
     def list_inbounds(self) -> List[Dict[str, Any]]:
         endpoints = [
-            f"{BASE_URL}/panel/api/inbounds/list",
-            f"{BASE_URL}/panel/api/inbounds/get/all",
+            ("get", f"{BASE_URL}/panel/api/inbounds/list"),
+            ("post", f"{BASE_URL}/panel/api/inbounds/list"),
+            ("get", f"{BASE_URL}/panel/api/inbounds/get/all"),
+            ("post", f"{BASE_URL}/panel/api/inbounds/get/all"),
+            ("get", f"{BASE_URL}/xui/API/inbounds/"),
         ]
-        for ep in endpoints:
+        for method, ep in endpoints:
             try:
-                r = self.s.get(ep, timeout=20)
+                r = self.s.post(ep, timeout=10) if method == "post" else self.s.get(ep, timeout=10)
                 data = r.json()
-                if data.get("success") and isinstance(data.get("obj"), list):
-                    return data["obj"]
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    if data.get("success") and isinstance(data.get("obj"), list):
+                        return data["obj"]
+                    if isinstance(data.get("obj"), dict) and isinstance(data["obj"].get("inbounds"), list):
+                        return data["obj"]["inbounds"]
             except Exception:
                 continue
         return []

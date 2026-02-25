@@ -33,6 +33,7 @@ MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
 MAX_LIMIT_IP = 5
 DEFAULT_FLOW = "xtls-rprx-vision"
 DEFAULT_LIMIT_IP = 2
+UNLIMITED_DEFAULT_LIMIT_IP = 1
 MAX_LINKS_PER_MESSAGE = 10
 LIST_PAGE_SIZE = 10
 CANCEL_OPTIONS = {"cancel", "لغو"}
@@ -344,9 +345,10 @@ def main_menu(role: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 Dashboard", callback_data="menu:dashboard")],
         [InlineKeyboardButton("👤 My Clients", callback_data="menu:my_clients")],
         [InlineKeyboardButton("➕ Create Client", callback_data="menu:create_client")],
-        [InlineKeyboardButton("🌐 Inbounds List", callback_data="menu:inbounds")],
-        [InlineKeyboardButton("💰 Wallet / Balance", callback_data="menu:wallet")],
-        [InlineKeyboardButton("📄 Transactions History", callback_data="menu:tx")],
+        [InlineKeyboardButton("🌐 لیست اینباندها", callback_data="menu:inbounds")],
+        [InlineKeyboardButton("📦 پلن‌های پیشنهادی", callback_data="menu:suggested_plans")],
+        [InlineKeyboardButton("💰 کیف پول / موجودی", callback_data="menu:wallet")],
+        [InlineKeyboardButton("📄 تاریخچه تراکنش", callback_data="menu:tx")],
         [InlineKeyboardButton("🆘 Support", callback_data="menu:support")],
     ]
     if role in {"reseller", "agent"}:
@@ -426,13 +428,20 @@ def page_bounds(total_items: int, page: int, per_page: int) -> tuple[int, int, i
     return page, offset, total_pages
 
 
-def inbound_price(inbound_id: int, days: int, gb: int) -> float:
+def inbound_price(tg_id: int, inbound_id: int, days: int, gb: int, limit_ip: Optional[int] = None) -> float:
     rule = db.inbound_rule(inbound_id)
     if rule and int(rule["enabled"]) == 0:
         raise ValueError("Selected inbound is disabled by admin")
-    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else db.get_setting_float("price_per_gb")
-    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else db.get_setting_float("price_per_day")
-    return round(gb * ppgb + days * ppday, 2)
+    if gb == 0:
+        limit = limit_ip if limit_ip in {1, 2, 3} else UNLIMITED_DEFAULT_LIMIT_IP
+        return float(db.get_setting_float(f"price_unlimited_ip{limit}"))
+    ppgb_default = db.get_setting_float("price_per_gb")
+    ppday_default = db.get_setting_float("price_per_day")
+    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else ppgb_default
+    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else ppday_default
+    ppgb_eff = db.get_effective_price_per_gb(tg_id, ppgb)
+    ppday_eff = db.get_effective_price_per_day(tg_id, ppday)
+    return round(gb * ppgb_eff + days * ppday_eff, 2)
 
 
 def inbound_pricing_text(inbound_id: int) -> str:
@@ -455,11 +464,12 @@ def order_count(w: Dict) -> int:
 
 
 def order_total_price(w: Dict) -> float:
+    tg_id = int(w.get("tg_id", 0))
     count = order_count(w)
     if w["kind"] == "multi":
-        total = sum(inbound_price(i, w["days"], w["gb"]) for i in (w.get("inbound_ids") or []))
+        total = sum(inbound_price(tg_id, i, w["days"], w["gb"], w.get("limit_ip")) for i in (w.get("inbound_ids") or []))
         return round(total, 2)
-    unit = inbound_price(w["inbound_id"], w["days"], w["gb"])
+    unit = inbound_price(tg_id, w["inbound_id"], w["days"], w["gb"], w.get("limit_ip"))
     return round(unit * count, 2)
 
 
@@ -494,15 +504,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.set_referred_by(u.id, int(referrer["tg_id"]))
     reset_flow(context)
     logger.info("user_start | user=%s | role=%s", u.id, role)
-    await update.message.reply_text(
-        "Welcome to Reseller Panel 👋\nUse the menu below.",
-        reply_markup=main_menu(role),
-    )
+    await update.message.reply_text("به پنل فروش خوش آمدید 👋", reply_markup=main_menu(role))
+
+
+async def photo_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("flow") != "topup_receipt":
+        await update.message.reply_text("برای این عکس عملیاتی تعریف نشده است.")
+        return
+    req_id = context.user_data.get("topup_request_id")
+    if not req_id:
+        await update.message.reply_text("درخواست شارژ یافت نشد. دوباره /topup بزنید.")
+        return
+    photo = update.message.photo[-1]
+    db.attach_topup_receipt(int(req_id), photo.file_id)
+    context.user_data["flow"] = None
+    context.user_data.pop("topup_request_id", None)
+    await update.message.reply_text(f"✅ رسید برای درخواست #{req_id} ثبت شد. منتظر تایید ادمین باشید.")
+    await context.bot.send_message(chat_id=ADMIN_TELEGRAM_ID, text=f"درخواست شارژ جدید #{req_id} برای تایید: /approvetopupid {req_id}")
+    try:
+        await context.bot.send_photo(chat_id=ADMIN_TELEGRAM_ID, photo=photo.file_id, caption=f"Receipt #{req_id}")
+    except Exception:
+        pass
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = get_user_role(update.effective_user.id)
-    await update.message.reply_text("Main menu", reply_markup=main_menu(role))
+    await update.message.reply_text("منوی اصلی", reply_markup=main_menu(role))
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -555,7 +582,19 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "menu:create_client":
-        await q.message.reply_text("Choose creation mode:", reply_markup=create_menu())
+        await q.message.reply_text("نوع ساخت را انتخاب کنید:", reply_markup=create_menu())
+        return
+
+    if data == "menu:suggested_plans":
+        plans = db.list_plan_templates("agent")
+        if not plans:
+            await q.message.reply_text("هنوز پلن پیشنهادی ثبت نشده است.")
+            return
+        lines = ["📦 پلن‌های پیشنهادی:"]
+        for p in plans[:20]:
+            gb_txt = "نامحدود" if int(p["gb"]) == 0 else f"{p['gb']} گیگ"
+            lines.append(f"• /useplan {p['id']} - {p['title']} ({p['days']} روز | {gb_txt} | {p['limit_ip']} کاربر)")
+        await q.message.reply_text("\n".join(lines))
         return
 
     if data == "menu:inbounds":
@@ -624,7 +663,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
             return
         context.user_data["flow"] = "wizard_inbound"
-        context.user_data["wizard"] = {"kind": "single"}
+        context.user_data["wizard"] = {"kind": "single", "tg_id": uid}
         logger.info("wizard_start | user=%s | kind=single", uid)
         await q.message.reply_text(
             "➕ Single client wizard\nStep 1/7: send inbound ID (or type: default).",
@@ -637,7 +676,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
             return
         context.user_data["flow"] = "wizard_inbound"
-        context.user_data["wizard"] = {"kind": "bulk"}
+        context.user_data["wizard"] = {"kind": "bulk", "tg_id": uid}
         logger.info("wizard_start | user=%s | kind=bulk", uid)
         await q.message.reply_text(
             "➕ Bulk client wizard\nStep 1/8: send inbound ID (or type: default).",
@@ -650,7 +689,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("⏳ لطفا کمی بعد دوباره تلاش کنید.")
             return
         context.user_data["flow"] = "wizard_inbounds"
-        context.user_data["wizard"] = {"kind": "multi"}
+        context.user_data["wizard"] = {"kind": "multi", "tg_id": uid}
         logger.info("wizard_start | user=%s | kind=multi", uid)
         await q.message.reply_text(
             "➕ Multi-inbound client wizard\nStep 1/7: send inbound IDs separated by comma. Example: 1,2,3",
@@ -1042,17 +1081,34 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if flow == "wizard_gb":
-        g = parse_positive_int(txt)
-        if not g or g > MAX_GB:
+        if txt.strip() in {"0", "نامحدود", "unlimited"}:
+            g = 0
+        else:
+            g = parse_positive_int(txt)
+        if g is None or g < 0 or g > MAX_GB:
             await update.message.reply_text(
-                f"Invalid GB. Enter a number between 1 and {MAX_GB}.",
+                f"حجم نامعتبر است. عددی بین 0 تا {MAX_GB} وارد کنید. (0 = نامحدود)",
                 reply_markup=cancel_keyboard(),
             )
             return
         w["gb"] = g
+        if g == 0:
+            context.user_data["flow"] = "wizard_limit_ip"
+            await update.message.reply_text("تعداد کاربر همزمان را انتخاب کنید (1/2/3). پیش‌فرض 1.", reply_markup=cancel_keyboard())
+            return
         context.user_data["flow"] = "wizard_start_after_first_use"
         step = "Step 5/7" if w["kind"] in {"single", "multi"} else "Step 6/8"
         await update.message.reply_text(f"{step}: start after first use? (y/n)", reply_markup=cancel_keyboard())
+        return
+
+    if flow == "wizard_limit_ip":
+        v = txt.strip() or "1"
+        if v not in {"1", "2", "3"}:
+            await update.message.reply_text("فقط یکی از مقادیر 1 یا 2 یا 3 را ارسال کنید.", reply_markup=cancel_keyboard())
+            return
+        w["limit_ip"] = int(v)
+        context.user_data["flow"] = "wizard_start_after_first_use"
+        await update.message.reply_text("بعد از اولین استفاده شروع شود؟ (y/n)", reply_markup=cancel_keyboard())
         return
 
     if flow == "wizard_start_after_first_use":
@@ -1161,7 +1217,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             email = w["remark"]
             sub_id = generate_sub_id()
             sub_link = subscription_link(sub_id)
-            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
+            limit_ip = clamp_limit_ip(int(w.get("limit_ip") or (UNLIMITED_DEFAULT_LIMIT_IP if int(w.get("gb", 0)) == 0 else DEFAULT_LIMIT_IP)))
             clients.append({
                 "id": uidc,
                 "email": email,
@@ -1195,7 +1251,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         elif w["kind"] == "bulk":
             inbound = api.get_inbound(w["inbound_id"])
             clients = []
-            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
+            limit_ip = clamp_limit_ip(int(w.get("limit_ip") or (UNLIMITED_DEFAULT_LIMIT_IP if int(w.get("gb", 0)) == 0 else DEFAULT_LIMIT_IP)))
             for i in range(w["count"]):
                 uidc = str(uuid.uuid4())
                 email = f"{w['base_remark']}_{i+1}"
@@ -1235,7 +1291,7 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             sub_id = generate_sub_id()
             sub_link = subscription_link(sub_id)
             subscription_links.append(sub_link)
-            limit_ip = clamp_limit_ip(DEFAULT_LIMIT_IP)
+            limit_ip = clamp_limit_ip(int(w.get("limit_ip") or (UNLIMITED_DEFAULT_LIMIT_IP if int(w.get("gb", 0)) == 0 else DEFAULT_LIMIT_IP)))
             for inbound_id in inbound_ids:
                 inbound = api.get_inbound(inbound_id)
                 uidc = str(uuid.uuid4())
@@ -1321,26 +1377,81 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "This is a button-first reseller panel.\n"
-        "Use /start to open menu.\n"
-        "Useful commands: /start, /menu, /cancel, /topup <amount>"
+        "راهنما:\n"
+        "/start - شروع\n/menu - منو\n/cancel - لغو\n"
+        "/topup مبلغ - ثبت درخواست شارژ\n/registeragent - ثبت به عنوان نماینده"
     )
 
 
 async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
-        await update.message.reply_text("Usage: /topup <amount>")
+        await update.message.reply_text("فرمت: /topup <amount>")
         return
     try:
         amt = float(context.args[0])
     except ValueError:
-        await update.message.reply_text("Amount must be numeric")
+        await update.message.reply_text("مبلغ باید عدد باشد")
         return
     if amt <= 0:
-        await update.message.reply_text("Amount must be > 0")
+        await update.message.reply_text("مبلغ باید بیشتر از صفر باشد")
         return
-    bal = db.add_balance(update.effective_user.id, amt, "topup.manual")
-    await update.message.reply_text(f"Top-up ok. Balance: {bal}")
+    req_id = db.create_topup_request(update.effective_user.id, amt)
+    context.user_data["flow"] = "topup_receipt"
+    context.user_data["topup_request_id"] = req_id
+    await update.message.reply_text(f"درخواست #{req_id} ثبت شد. لطفاً رسید پرداخت را به صورت عکس ارسال کنید.")
+
+
+async def approve_topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("دسترسی ندارید")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("فرمت: /approvetopupid <topupid>")
+        return
+    req_id = as_int(context.args[0])
+    if not req_id:
+        await update.message.reply_text("شناسه نامعتبر است")
+        return
+    try:
+        bal = db.approve_topup_request(req_id, update.effective_user.id)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    req = db.get_topup_request(req_id)
+    await update.message.reply_text(f"✅ درخواست #{req_id} تایید شد. موجودی جدید کاربر: {bal}")
+    if req:
+        await context.bot.send_message(chat_id=int(req["tg_id"]), text=f"✅ درخواست شارژ #{req_id} تایید شد.")
+
+
+async def register_agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    db.ensure_agent(u.id, u.username or "", u.full_name or "", role="agent")
+    db.set_agent_registration(u.id, True)
+    await update.message.reply_text("✅ ثبت‌نام نماینده انجام شد. قیمت اختصاصی توسط ادمین قابل تنظیم است.")
+
+
+async def use_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("فرمت: /useplan <id>")
+        return
+    pid = as_int(context.args[0])
+    if not pid:
+        await update.message.reply_text("شناسه پلن نامعتبر است")
+        return
+    plans = db.list_plan_templates("agent")
+    plan = next((p for p in plans if int(p["id"]) == pid), None)
+    if not plan:
+        await update.message.reply_text("پلن پیدا نشد")
+        return
+    context.user_data["flow"] = "wizard_inbound"
+    context.user_data["wizard"] = {
+        "kind": "single",
+        "tg_id": update.effective_user.id,
+        "days": int(plan["days"]),
+        "gb": int(plan["gb"]),
+        "limit_ip": int(plan["limit_ip"]),
+    }
+    await update.message.reply_text("پلن انتخاب شد. حالا inbound ID را ارسال کنید (یا default).")
 
 
 def ensure_referral_code(tg_id: int) -> str:
@@ -1529,10 +1640,14 @@ def main() -> None:
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("topup", topup))
+    app.add_handler(CommandHandler("approvetopupid", approve_topup_cmd))
+    app.add_handler(CommandHandler("registeragent", register_agent_cmd))
+    app.add_handler(CommandHandler("useplan", use_plan_cmd))
     app.add_handler(CommandHandler("referral", referral_cmd))
     app.add_handler(broadcast_conv_handler)
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_flow))
+    app.add_handler(MessageHandler(filters.PHOTO, photo_flow))
     webhook_url = f"{WEBHOOK_BASE_URL}/{WEBHOOK_PATH}"
     app.run_webhook(
         listen=WEBHOOK_LISTEN,
