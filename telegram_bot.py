@@ -16,7 +16,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 import db
 import xui_api
-from xui_api import XUIApi, subscription_link, vless_link
+from xui_api import XUIApi, build_client_payload, subscription_link, vless_link
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
@@ -1287,19 +1287,17 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
             sub_id = generate_sub_id()
             sub_link = subscription_link(sub_id)
             limit_ip = clamp_limit_ip(int(w.get("limit_ip") or (UNLIMITED_DEFAULT_LIMIT_IP if int(w.get("gb", 0)) == 0 else DEFAULT_LIMIT_IP)))
-            clients.append({
-                "id": uidc,
-                "email": email,
-                "enable": True,
-                "expiryTime": expiry,
-                "totalGB": int(w["gb"]) * 1024**3,
-                "flow": DEFAULT_FLOW,
-                "limitIp": limit_ip,
-                "tgId": str(uid),
-                "subId": sub_id,
-                "comment": "tg",
-                "reset": reset_days,
-            })
+            clients.append(build_client_payload(
+                uidc,
+                email,
+                expiry,
+                int(w["gb"]),
+                sub_id,
+                str(uid),
+                flow=DEFAULT_FLOW,
+                reset=reset_days,
+                limit_ip=limit_ip,
+            ))
             link = vless_link(uidc, inbound, email)
             links.append(link)
             subscription_links.append(sub_link)
@@ -1326,19 +1324,17 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                 email = f"{w['base_remark']}_{i+1}"
                 sub_id = generate_sub_id()
                 sub_link = subscription_link(sub_id)
-                clients.append({
-                    "id": uidc,
-                    "email": email,
-                    "enable": True,
-                    "expiryTime": expiry,
-                    "totalGB": int(w["gb"]) * 1024**3,
-                    "flow": DEFAULT_FLOW,
-                    "limitIp": limit_ip,
-                    "tgId": str(uid),
-                    "subId": sub_id,
-                    "comment": "tg",
-                    "reset": reset_days,
-                })
+                clients.append(build_client_payload(
+                    uidc,
+                    email,
+                    expiry,
+                    int(w["gb"]),
+                    sub_id,
+                    str(uid),
+                    flow=DEFAULT_FLOW,
+                    reset=reset_days,
+                    limit_ip=limit_ip,
+                ))
                 link = vless_link(uidc, inbound, email)
                 links.append(link)
                 subscription_links.append(sub_link)
@@ -1365,19 +1361,17 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
                 inbound = api.get_inbound(inbound_id)
                 uidc = str(uuid.uuid4())
                 email = w["remark"]
-                client = {
-                    "id": uidc,
-                    "email": email,
-                    "enable": True,
-                    "expiryTime": expiry,
-                    "totalGB": int(w["gb"]) * 1024**3,
-                    "flow": DEFAULT_FLOW,
-                    "limitIp": limit_ip,
-                    "tgId": str(uid),
-                    "subId": sub_id,
-                    "comment": "tg",
-                    "reset": reset_days,
-                }
+                client = build_client_payload(
+                    uidc,
+                    email,
+                    expiry,
+                    int(w["gb"]),
+                    sub_id,
+                    str(uid),
+                    flow=DEFAULT_FLOW,
+                    reset=reset_days,
+                    limit_ip=limit_ip,
+                )
                 api.add_clients(inbound_id, [client])
                 link = vless_link(uidc, inbound, email)
                 links.append(link)

@@ -804,12 +804,29 @@ def broadcast_send():
 def pricing():
     if not auth_ok(request):
         return "Forbidden", 403
-    db.set_setting("price_per_gb", request.form["price_per_gb"])
-    db.set_setting("price_per_day", request.form["price_per_day"])
-    db.set_setting("price_unlimited_ip1", request.form.get("price_unlimited_ip1", "150000"))
-    db.set_setting("price_unlimited_ip2", request.form.get("price_unlimited_ip2", "230000"))
-    db.set_setting("price_unlimited_ip3", request.form.get("price_unlimited_ip3", "300000"))
+
+    fields = {
+        "price_per_gb": request.form.get("price_per_gb", "").strip(),
+        "price_per_day": request.form.get("price_per_day", "").strip(),
+        "price_unlimited_ip1": request.form.get("price_unlimited_ip1", "150000").strip(),
+        "price_unlimited_ip2": request.form.get("price_unlimited_ip2", "230000").strip(),
+        "price_unlimited_ip3": request.form.get("price_unlimited_ip3", "300000").strip(),
+    }
+
+    try:
+        parsed = {k: float(v) for k, v in fields.items()}
+    except ValueError:
+        flash("Pricing values must be numeric.", "error")
+        return redirect(url_for("index", token=request.form["token"]))
+
+    if any(v < 0 for v in parsed.values()):
+        flash("Pricing values must be zero or positive.", "error")
+        return redirect(url_for("index", token=request.form["token"]))
+
+    for key, value in parsed.items():
+        db.set_setting(key, str(value))
     db.set_setting("manual_payment_details", request.form.get("manual_payment_details", "").strip())
+    flash("Pricing settings updated.", "success")
     return redirect(url_for("index", token=request.form["token"]))
 
 
