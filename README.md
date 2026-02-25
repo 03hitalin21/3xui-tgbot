@@ -25,3 +25,14 @@ cp config/bot.env.example .env
 ## Why bot can stop after a while
 
 The bot is started as a background process by shell script and is **not** supervised by `systemd` by default. If the Python process exits (error/OOM/restart), it will stay down until manually restarted.
+
+
+## Panel timeout tuning
+
+If your panel is slow or remote, increase these environment variables in `.env`:
+
+- `XUI_CONNECT_TIMEOUT` (default `30`)
+- `XUI_READ_TIMEOUT` (default `30`)
+- `XUI_REQUEST_RETRIES` (default `2`)
+
+This helps reduce transient timeout errors when loading the inbounds list.
