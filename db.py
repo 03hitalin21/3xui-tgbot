@@ -178,6 +178,10 @@ def init_db() -> None:
             "support_text": "Contact admin for support.",
             "low_balance_threshold": "50",
             "referral_commission_pct": os.getenv("REFERRAL_COMMISSION_PCT", "10"),
+            "manual_payment_details": os.getenv(
+                "MANUAL_PAYMENT_DETAILS",
+                "Manual transfer:\nBank: Example Bank\nCard/IBAN: 0000-0000-0000-0000\nAccount name: Example Account",
+            ),
         }
         for k, v in defaults.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (k, v))
@@ -819,6 +823,8 @@ def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> flo
         raise ValueError("Topup request not found")
     if req["status"] != "pending":
         raise ValueError("Topup request is already processed")
+    if not req["receipt_file_id"]:
+        raise ValueError("Topup receipt is missing")
     with get_conn() as conn:
         conn.execute(
             "UPDATE topup_requests SET status='approved', admin_note=?, updated_at=? WHERE id=?",

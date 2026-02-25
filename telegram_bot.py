@@ -334,6 +334,13 @@ def load_low_balance_threshold() -> float:
     return float(db.get_setting_float("low_balance_threshold"))
 
 
+def manual_payment_text() -> str:
+    details = db.get_setting_text("manual_payment_details").strip()
+    if not details:
+        return ""
+    return f"💳 روش پرداخت (انتقال دستی):\n{details}"
+
+
 def expiry_value(days: int, start_after_first_use: bool) -> int:
     if start_after_first_use:
         return -int(days * 86400 * 1000)
@@ -624,7 +631,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu:wallet":
         a = db.get_agent(uid)
-        await q.message.reply_text(f"💰 Balance: {a['balance'] if a else 0}")
+        msg = [f"💰 Balance: {a['balance'] if a else 0}"]
+        payment_details = manual_payment_text()
+        if payment_details:
+            msg.append("")
+            msg.append(payment_details)
+            msg.append("برای شارژ: /topup <amount> را بزنید و رسید را ارسال کنید.")
+        await q.message.reply_text("\n".join(msg))
         return
 
     if data == "menu:tx":
@@ -1398,7 +1411,13 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     req_id = db.create_topup_request(update.effective_user.id, amt)
     context.user_data["flow"] = "topup_receipt"
     context.user_data["topup_request_id"] = req_id
-    await update.message.reply_text(f"درخواست #{req_id} ثبت شد. لطفاً رسید پرداخت را به صورت عکس ارسال کنید.")
+    details = manual_payment_text()
+    msg = [f"درخواست #{req_id} ثبت شد."]
+    if details:
+        msg.append(details)
+    msg.append("پس از انتقال، لطفاً رسید پرداخت را به صورت عکس همینجا ارسال کنید.")
+    msg.append("پس از ارسال رسید، ادمین می‌تواند با /approvetopupid درخواست را تایید کند.")
+    await update.message.reply_text("\n\n".join(msg))
 
 
 async def approve_topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
