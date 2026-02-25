@@ -144,7 +144,7 @@ def init_db() -> None:
                 days INTEGER NOT NULL,
                 gb INTEGER NOT NULL,
                 limit_ip INTEGER NOT NULL DEFAULT 1,
-                role_scope TEXT NOT NULL DEFAULT 'agent',
+                role_scope TEXT NOT NULL DEFAULT 'reseller',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -833,7 +833,7 @@ def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> flo
     return add_balance(int(req["tg_id"]), float(req["amount"]), "topup.manual_approved", meta=f"request_id:{request_id}")
 
 
-def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_scope: str = "agent") -> int:
+def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_scope: str = "reseller") -> int:
     ts = now_ts()
     with get_conn() as conn:
         cur = conn.execute(
@@ -843,8 +843,10 @@ def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_sco
         return int(cur.lastrowid)
 
 
-def list_plan_templates(role_scope: str = "agent") -> List[sqlite3.Row]:
+def list_plan_templates(role_scope: Optional[str] = "reseller") -> List[sqlite3.Row]:
     with get_conn() as conn:
+        if role_scope is None:
+            return conn.execute("SELECT * FROM plan_templates WHERE enabled=1 ORDER BY id DESC").fetchall()
         return conn.execute(
             "SELECT * FROM plan_templates WHERE enabled=1 AND role_scope IN (?, 'all') ORDER BY id DESC",
             (role_scope,),

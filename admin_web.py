@@ -666,16 +666,19 @@ def admin_plans():
     if not auth_ok(request):
         return "Forbidden", 403
     if request.method == "POST":
+        role_scope = (request.form.get("role_scope", "reseller").strip().lower() or "reseller")
+        if role_scope not in {"reseller", "agent", "all"}:
+            role_scope = "reseller"
         db.create_plan_template(
             request.form.get("title", "").strip() or "Plan",
             int(request.form.get("days", "30")),
             int(request.form.get("gb", "30")),
             int(request.form.get("limit_ip", "1")),
-            "agent",
+            role_scope,
         )
         flash("Plan created.", "success")
         return redirect(url_for("admin_plans", token=request.form.get("token")))
-    return render_template("admin_web_panel/plans.html", token=request.args.get("token"), rows=db.list_plan_templates("agent"))
+    return render_template("admin_web_panel/plans.html", token=request.args.get("token"), rows=db.list_plan_templates(None))
 
 
 @app.get("/admin/export/transactions.csv")

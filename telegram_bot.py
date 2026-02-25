@@ -593,7 +593,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "menu:suggested_plans":
-        plans = db.list_plan_templates("agent")
+        plans = db.list_plan_templates(get_user_role(uid))
         if not plans:
             await q.message.reply_text("هنوز پلن پیشنهادی ثبت نشده است.")
             return
@@ -1457,7 +1457,7 @@ async def use_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pid:
         await update.message.reply_text("شناسه پلن نامعتبر است")
         return
-    plans = db.list_plan_templates("agent")
+    plans = db.list_plan_templates(get_user_role(update.effective_user.id))
     plan = next((p for p in plans if int(p["id"]) == pid), None)
     if not plan:
         await update.message.reply_text("پلن پیدا نشد")
