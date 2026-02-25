@@ -772,7 +772,7 @@ async def _notify_topup_result(tg_id: int, topup_id: int, balance: float):
     if not token:
         return
     bot = Bot(token=token)
-    await bot.send_message(chat_id=tg_id, text=f"✅ درخواست شارژ #{topup_id} تایید شد. موجودی جدید شما: {balance}")
+    await bot.send_message(chat_id=tg_id, text=f"✅ درخواست شارژ #{topup_id} تایید شد. موجودی جدید شما: {int(balance) if float(balance).is_integer() else round(balance,2)} تومان")
 
 
 async def _broadcast(message: str, user_ids: List[int]) -> dict:

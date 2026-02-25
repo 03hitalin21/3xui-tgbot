@@ -820,11 +820,11 @@ def list_topup_requests(status: Optional[str] = None, limit: int = 100) -> List[
 def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> float:
     req = get_topup_request(request_id)
     if not req:
-        raise ValueError("Topup request not found")
+        raise ValueError("درخواست شارژ پیدا نشد")
     if req["status"] != "pending":
-        raise ValueError("Topup request is already processed")
+        raise ValueError("این درخواست شارژ قبلاً پردازش شده است")
     if not req["receipt_file_id"]:
-        raise ValueError("Topup receipt is missing")
+        raise ValueError("رسید پرداخت برای این درخواست ثبت نشده است")
     with get_conn() as conn:
         conn.execute(
             "UPDATE topup_requests SET status='approved', admin_note=?, updated_at=? WHERE id=?",
