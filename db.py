@@ -144,7 +144,7 @@ def init_db() -> None:
                 days INTEGER NOT NULL,
                 gb INTEGER NOT NULL,
                 limit_ip INTEGER NOT NULL DEFAULT 1,
-                role_scope TEXT NOT NULL DEFAULT 'agent',
+                role_scope TEXT NOT NULL DEFAULT 'reseller',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -178,6 +178,10 @@ def init_db() -> None:
             "support_text": "Contact admin for support.",
             "low_balance_threshold": "50",
             "referral_commission_pct": os.getenv("REFERRAL_COMMISSION_PCT", "10"),
+            "manual_payment_details": os.getenv(
+                "MANUAL_PAYMENT_DETAILS",
+                "Manual transfer:\nBank: Example Bank\nCard/IBAN: 0000-0000-0000-0000\nAccount name: Example Account",
+            ),
         }
         for k, v in defaults.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (k, v))
@@ -819,6 +823,8 @@ def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> flo
         raise ValueError("Topup request not found")
     if req["status"] != "pending":
         raise ValueError("Topup request is already processed")
+    if not req["receipt_file_id"]:
+        raise ValueError("Topup receipt is missing")
     with get_conn() as conn:
         conn.execute(
             "UPDATE topup_requests SET status='approved', admin_note=?, updated_at=? WHERE id=?",
@@ -827,7 +833,7 @@ def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> flo
     return add_balance(int(req["tg_id"]), float(req["amount"]), "topup.manual_approved", meta=f"request_id:{request_id}")
 
 
-def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_scope: str = "agent") -> int:
+def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_scope: str = "reseller") -> int:
     ts = now_ts()
     with get_conn() as conn:
         cur = conn.execute(
@@ -837,8 +843,10 @@ def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_sco
         return int(cur.lastrowid)
 
 
-def list_plan_templates(role_scope: str = "agent") -> List[sqlite3.Row]:
+def list_plan_templates(role_scope: Optional[str] = "reseller") -> List[sqlite3.Row]:
     with get_conn() as conn:
+        if role_scope is None:
+            return conn.execute("SELECT * FROM plan_templates WHERE enabled=1 ORDER BY id DESC").fetchall()
         return conn.execute(
             "SELECT * FROM plan_templates WHERE enabled=1 AND role_scope IN (?, 'all') ORDER BY id DESC",
             (role_scope,),
