@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Iterable, List, Sequence
 
-from flask import Flask, flash, redirect, render_template_string, request, send_file, url_for
+from flask import Flask, flash, redirect, render_template, render_template_string, request, send_file, url_for
 from telegram import Bot
 
 import db
@@ -80,6 +80,8 @@ INDEX = """
   <h3>Quick links</h3>
   <a href='/dashboard?token={{token}}'>Dashboard</a> |
   <a href='/admin/users?token={{token}}'>Users/Agents</a> |
+  <a href='/admin/topups?token={{token}}'>Topups</a> |
+  <a href='/admin/plans?token={{token}}'>Plans</a> |
   <a href='/admin/promos/bulk-generate?token={{token}}'>Bulk Promos</a> |
   <a href='/?token={{token}}'>Pricing/Promos</a> |
   <a href='/broadcast?token={{token}}'>Broadcast</a>
@@ -90,6 +92,9 @@ INDEX = """
     <input type='hidden' name='token' value='{{token}}'>
     Price/GB: <input name='price_per_gb' value='{{price_per_gb}}'>
     Price/Day: <input name='price_per_day' value='{{price_per_day}}'>
+    Unlimited IP1: <input name='price_unlimited_ip1' value='{{price_unlimited_ip1}}'>
+    Unlimited IP2: <input name='price_unlimited_ip2' value='{{price_unlimited_ip2}}'>
+    Unlimited IP3: <input name='price_unlimited_ip3' value='{{price_unlimited_ip3}}'>
     <button>Save</button>
   </form>
 </div>
@@ -226,6 +231,7 @@ BROWSE_USERS = """
       <th>Join Date</th>
       <th>Clients</th>
       <th>Action</th>
+      <th>Pricing</th>
     </tr>
     {% for u in users %}
       <tr>
@@ -236,6 +242,14 @@ BROWSE_USERS = """
         <td>{{u['created_at']}}</td>
         <td>{{u['client_count']}}</td>
         <td><a href='/admin/user/{{u["tg_id"]}}?token={{token}}'>View</a></td>
+        <td>
+          <form method='post' action='/admin/user/{{u["tg_id"]}}/pricing'>
+            <input type='hidden' name='token' value='{{token}}'>
+            <input name='price_per_gb' placeholder='custom p/gb'>
+            <input name='price_per_day' placeholder='custom p/day'>
+            <button>Save</button>
+          </form>
+        </td>
       </tr>
     {% endfor %}
   </table>
@@ -364,8 +378,34 @@ BROADCAST = """
 {% endif %}
 """
 
+TOPUPS = """
+<!doctype html><title>Topups</title>{{style}}
+<h1>Pending Topups</h1>
+<div class='card'><a href='/?token={{token}}'>Back</a></div>
+<table><tr><th>ID</th><th>User</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Action</th></tr>
+{% for t in rows %}<tr>
+<td>{{t['id']}}</td><td>{{t['tg_id']}} ({{t['username'] or '-'}})</td><td>{{t['amount']}}</td>
+<td>{{'yes' if t['receipt_file_id'] else 'no'}}</td><td>{{t['status']}}</td>
+<td>{% if t['status']=='pending' %}<a href='/admin/topups/{{t["id"]}}/confirm?token={{token}}'>Confirm</a>{% endif %}</td>
+</tr>{% endfor %}</table>
+"""
+
+PLANS = """
+<!doctype html><title>Plans</title>{{style}}
+<h1>Suggested Plans</h1><div class='card'><a href='/?token={{token}}'>Back</a></div>
+<div class='card'><form method='post' action='/admin/plans'>
+<input type='hidden' name='token' value='{{token}}'>
+Title<input name='title'> Days<input name='days'> GB (0=unlimited)<input name='gb'> limitIp<input name='limit_ip' value='1'>
+<button>Create</button></form></div>
+<table><tr><th>ID</th><th>Title</th><th>Days</th><th>GB</th><th>limitIp</th></tr>
+{% for p in rows %}<tr><td>{{p['id']}}</td><td>{{p['title']}}</td><td>{{p['days']}}</td><td>{{p['gb']}}</td><td>{{p['limit_ip']}}</td></tr>{% endfor %}
+</table>
+"""
+
 
 @app.get("/")
+@app.get("/admin")
+@app.get("/admin/")
 def index():
     if not auth_ok(request):
         return "Forbidden. Provide ?token=ADMIN_WEB_TOKEN", 403
@@ -374,12 +414,14 @@ def index():
         item = dict(row)
         item["referred_at"] = _format_ts(int(item["referred_at"]))
         referrals.append(item)
-    return render_template_string(
-        INDEX,
-        style=BASE_STYLE,
+    return render_template(
+        "admin_web_panel/index.html",
         token=request.args.get("token"),
         price_per_gb=db.get_setting_float("price_per_gb"),
         price_per_day=db.get_setting_float("price_per_day"),
+        price_unlimited_ip1=db.get_setting_float("price_unlimited_ip1"),
+        price_unlimited_ip2=db.get_setting_float("price_unlimited_ip2"),
+        price_unlimited_ip3=db.get_setting_float("price_unlimited_ip3"),
         promos=db.list_promos(),
         agents=db.top_agents(),
         referral_stats=db.list_referral_stats(),
@@ -391,9 +433,8 @@ def index():
 def dashboard():
     if not auth_ok(request):
         return "Forbidden. Provide ?token=ADMIN_WEB_TOKEN", 403
-    return render_template_string(
-        DASHBOARD,
-        style=BASE_STYLE,
+    return render_template(
+        "admin_web_panel/dashboard.html",
         token=request.args.get("token"),
         resellers=db.count_resellers(),
         clients=db.count_all_clients(),
@@ -420,9 +461,8 @@ def admin_users():
         row = dict(u)
         row["created_at"] = _format_ts(int(row["created_at"]))
         formatted.append(row)
-    return render_template_string(
-        BROWSE_USERS,
-        style=BASE_STYLE,
+    return render_template(
+        "admin_web_panel/users.html",
         token=request.args.get("token"),
         search=search,
         users=formatted,
@@ -585,6 +625,54 @@ def manual_adjust(tg_id: int):
     return redirect(url_for("user_detail", tg_id=tg_id, token=request.form.get("token")))
 
 
+@app.post("/admin/user/<int:tg_id>/pricing")
+def set_user_pricing(tg_id: int):
+    if not auth_ok(request):
+        return "Forbidden", 403
+    pgb = request.form.get("price_per_gb", "").strip()
+    pday = request.form.get("price_per_day", "").strip()
+    db.set_agent_registration(tg_id, True)
+    db.set_agent_pricing(tg_id, float(pgb) if pgb else None, float(pday) if pday else None)
+    flash("Agent pricing updated.", "success")
+    return redirect(url_for("admin_users", token=request.form.get("token")))
+
+
+@app.get("/admin/topups")
+def admin_topups():
+    if not auth_ok(request):
+        return "Forbidden", 403
+    return render_template("admin_web_panel/topups.html", token=request.args.get("token"), rows=db.list_topup_requests(limit=200))
+
+
+@app.get("/admin/topups/<int:topup_id>/confirm")
+def confirm_topup(topup_id: int):
+    if not auth_ok(request):
+        return "Forbidden", 403
+    try:
+        db.approve_topup_request(topup_id, 0, "approved by admin panel")
+        flash(f"Topup #{topup_id} confirmed", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("admin_topups", token=request.args.get("token")))
+
+
+@app.route("/admin/plans", methods=["GET", "POST"])
+def admin_plans():
+    if not auth_ok(request):
+        return "Forbidden", 403
+    if request.method == "POST":
+        db.create_plan_template(
+            request.form.get("title", "").strip() or "Plan",
+            int(request.form.get("days", "30")),
+            int(request.form.get("gb", "30")),
+            int(request.form.get("limit_ip", "1")),
+            "agent",
+        )
+        flash("Plan created.", "success")
+        return redirect(url_for("admin_plans", token=request.form.get("token")))
+    return render_template("admin_web_panel/plans.html", token=request.args.get("token"), rows=db.list_plan_templates("agent"))
+
+
 @app.get("/admin/export/transactions.csv")
 def export_transactions():
     if not auth_ok(request):
@@ -702,6 +790,9 @@ def pricing():
         return "Forbidden", 403
     db.set_setting("price_per_gb", request.form["price_per_gb"])
     db.set_setting("price_per_day", request.form["price_per_day"])
+    db.set_setting("price_unlimited_ip1", request.form.get("price_unlimited_ip1", "150000"))
+    db.set_setting("price_unlimited_ip2", request.form.get("price_unlimited_ip2", "230000"))
+    db.set_setting("price_unlimited_ip3", request.form.get("price_unlimited_ip3", "300000"))
     return redirect(url_for("index", token=request.form["token"]))
 
 

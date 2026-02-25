@@ -44,6 +44,9 @@ def init_db() -> None:
                 balance REAL NOT NULL DEFAULT 0,
                 lifetime_topup REAL NOT NULL DEFAULT 0,
                 preferred_inbound INTEGER,
+                is_registered INTEGER NOT NULL DEFAULT 0,
+                custom_price_per_gb REAL,
+                custom_price_per_day REAL,
                 referral_code TEXT,
                 referred_by INTEGER,
                 created_at INTEGER NOT NULL,
@@ -123,12 +126,38 @@ def init_db() -> None:
                 price_per_day REAL,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS topup_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                receipt_file_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                admin_note TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                days INTEGER NOT NULL,
+                gb INTEGER NOT NULL,
+                limit_ip INTEGER NOT NULL DEFAULT 1,
+                role_scope TEXT NOT NULL DEFAULT 'agent',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             """
         )
 
         # Migrations for older DBs
         _ensure_column(conn, "agents", "role", "role TEXT NOT NULL DEFAULT 'reseller'")
         _ensure_column(conn, "agents", "is_active", "is_active INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "agents", "is_registered", "is_registered INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "agents", "custom_price_per_gb", "custom_price_per_gb REAL")
+        _ensure_column(conn, "agents", "custom_price_per_day", "custom_price_per_day REAL")
         _ensure_column(conn, "agents", "referral_code", "referral_code TEXT")
         _ensure_column(conn, "agents", "referred_by", "referred_by INTEGER")
         _ensure_column(conn, "promo_codes", "discount_type", "discount_type TEXT NOT NULL DEFAULT 'percent'")
@@ -141,8 +170,11 @@ def init_db() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_referral_code ON agents(referral_code)")
 
         defaults = {
-            "price_per_gb": "0.15",
+            "price_per_gb": "5000",
             "price_per_day": "0.10",
+            "price_unlimited_ip1": "150000",
+            "price_unlimited_ip2": "230000",
+            "price_unlimited_ip3": "300000",
             "support_text": "Contact admin for support.",
             "low_balance_threshold": "50",
             "referral_commission_pct": os.getenv("REFERRAL_COMMISSION_PCT", "10"),
@@ -404,6 +436,38 @@ def list_agents(limit: int = 50) -> List[sqlite3.Row]:
             """,
             (limit,),
         ).fetchall()
+
+
+def set_agent_registration(tg_id: int, registered: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET is_registered=?, updated_at=? WHERE tg_id=?",
+            (1 if registered else 0, now_ts(), tg_id),
+        )
+
+
+def set_agent_pricing(tg_id: int, price_per_gb: Optional[float], price_per_day: Optional[float]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET custom_price_per_gb=?, custom_price_per_day=?, updated_at=? WHERE tg_id=?",
+            (price_per_gb, price_per_day, now_ts(), tg_id),
+        )
+
+
+def get_effective_price_per_gb(tg_id: int, default: float) -> float:
+    with get_conn() as conn:
+        row = conn.execute("SELECT is_registered, custom_price_per_gb FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+    if not row or int(row["is_registered"] or 0) == 0 or row["custom_price_per_gb"] is None:
+        return default
+    return float(row["custom_price_per_gb"])
+
+
+def get_effective_price_per_day(tg_id: int, default: float) -> float:
+    with get_conn() as conn:
+        row = conn.execute("SELECT is_registered, custom_price_per_day FROM agents WHERE tg_id=?", (tg_id,)).fetchone()
+    if not row or int(row["is_registered"] or 0) == 0 or row["custom_price_per_day"] is None:
+        return default
+    return float(row["custom_price_per_day"])
 
 
 def search_agents(query: str, limit: int = 50) -> List[sqlite3.Row]:
@@ -714,6 +778,71 @@ def insert_promo_batch(rows: List[Dict]) -> int:
             ],
         )
     return len(rows)
+
+
+def create_topup_request(tg_id: int, amount: float, receipt_file_id: str = "") -> int:
+    ts = now_ts()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO topup_requests(tg_id,amount,receipt_file_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (tg_id, amount, receipt_file_id, "pending", ts, ts),
+        )
+        return int(cur.lastrowid)
+
+
+def attach_topup_receipt(request_id: int, receipt_file_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE topup_requests SET receipt_file_id=?, updated_at=? WHERE id=?", (receipt_file_id, now_ts(), request_id))
+
+
+def get_topup_request(request_id: int) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM topup_requests WHERE id=?", (request_id,)).fetchone()
+
+
+def list_topup_requests(status: Optional[str] = None, limit: int = 100) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        if status:
+            return conn.execute(
+                "SELECT t.*, a.username FROM topup_requests t LEFT JOIN agents a ON a.tg_id=t.tg_id WHERE t.status=? ORDER BY t.id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT t.*, a.username FROM topup_requests t LEFT JOIN agents a ON a.tg_id=t.tg_id ORDER BY t.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def approve_topup_request(request_id: int, admin_id: int, note: str = "") -> float:
+    req = get_topup_request(request_id)
+    if not req:
+        raise ValueError("Topup request not found")
+    if req["status"] != "pending":
+        raise ValueError("Topup request is already processed")
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE topup_requests SET status='approved', admin_note=?, updated_at=? WHERE id=?",
+            (note or f"approved by {admin_id}", now_ts(), request_id),
+        )
+    return add_balance(int(req["tg_id"]), float(req["amount"]), "topup.manual_approved", meta=f"request_id:{request_id}")
+
+
+def create_plan_template(title: str, days: int, gb: int, limit_ip: int, role_scope: str = "agent") -> int:
+    ts = now_ts()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO plan_templates(title,days,gb,limit_ip,role_scope,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            (title, days, gb, limit_ip, role_scope, 1, ts, ts),
+        )
+        return int(cur.lastrowid)
+
+
+def list_plan_templates(role_scope: str = "agent") -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM plan_templates WHERE enabled=1 AND role_scope IN (?, 'all') ORDER BY id DESC",
+            (role_scope,),
+        ).fetchall()
 
 
 def apply_promo(code: str, tg_id: int) -> float:

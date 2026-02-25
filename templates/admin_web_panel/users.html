@@ -1,0 +1,37 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Users & Agents{% endblock %}
+{% block content %}
+<section class="card">
+  <form class="search-row" method="get" action="/admin/users">
+    <input type="hidden" name="token" value="{{ token }}" />
+    <input name="search" value="{{ search }}" placeholder="username / tg_id / role" />
+    <button class="btn">Search</button>
+    <a class="btn ghost" href="/admin/export/agents.csv?token={{ token }}">Export CSV</a>
+  </form>
+</section>
+
+<section class="card table-wrap">
+  <table>
+    <tr><th>Username</th><th>Telegram ID</th><th>Role</th><th>Balance</th><th>Join Date</th><th>Clients</th><th>Actions</th><th>Exclusive Pricing</th></tr>
+    {% for u in users %}
+      <tr>
+        <td>{{ u['username'] or '-' }}</td>
+        <td>{{ u['tg_id'] }}</td>
+        <td>{{ u['role'] }}</td>
+        <td>{{ '%.2f'|format(u['balance']) }}</td>
+        <td>{{ u['created_at'] }}</td>
+        <td>{{ u['client_count'] }}</td>
+        <td><a href="/admin/user/{{ u['tg_id'] }}?token={{ token }}">View</a></td>
+        <td>
+          <form method="post" action="/admin/user/{{ u['tg_id'] }}/pricing" class="inline-form">
+            <input type="hidden" name="token" value="{{ token }}" />
+            <input name="price_per_gb" placeholder="per GB" />
+            <input name="price_per_day" placeholder="per Day" />
+            <button class="btn">Save</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

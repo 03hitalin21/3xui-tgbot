@@ -1,0 +1,60 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Admin Overview{% endblock %}
+{% block content %}
+<section class="grid kpi-grid">
+  <div class="kpi"><span>Price / GB</span><strong>{{ price_per_gb }}</strong></div>
+  <div class="kpi"><span>Price / Day</span><strong>{{ price_per_day }}</strong></div>
+  <div class="kpi"><span>Unlimited 1 IP</span><strong>{{ price_unlimited_ip1 }}</strong></div>
+  <div class="kpi"><span>Unlimited 2 IP</span><strong>{{ price_unlimited_ip2 }}</strong></div>
+  <div class="kpi"><span>Unlimited 3 IP</span><strong>{{ price_unlimited_ip3 }}</strong></div>
+</section>
+
+<section class="card">
+  <h2>Pricing</h2>
+  <form class="grid form-grid" method="post" action="/pricing">
+    <input type="hidden" name="token" value="{{ token }}" />
+    <label>Price / GB<input name="price_per_gb" value="{{ price_per_gb }}" /></label>
+    <label>Price / Day<input name="price_per_day" value="{{ price_per_day }}" /></label>
+    <label>Unlimited IP1<input name="price_unlimited_ip1" value="{{ price_unlimited_ip1 }}" /></label>
+    <label>Unlimited IP2<input name="price_unlimited_ip2" value="{{ price_unlimited_ip2 }}" /></label>
+    <label>Unlimited IP3<input name="price_unlimited_ip3" value="{{ price_unlimited_ip3 }}" /></label>
+    <div><button class="btn">Save Pricing</button></div>
+  </form>
+</section>
+
+<section class="split">
+  <div class="card">
+    <h2>Create Promo</h2>
+    <form method="post" action="/promo" class="stack-sm">
+      <input type="hidden" name="token" value="{{ token }}" />
+      <label>Code<input name="code" placeholder="NEWYEAR" /></label>
+      <label>Discount %<input name="discount_percent" placeholder="20" /></label>
+      <label>Max uses<input name="max_uses" placeholder="100" /></label>
+      <button class="btn">Create</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Promo List</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Code</th><th>%</th><th>Used</th><th>Max</th><th>Active</th></tr>
+        {% for p in promos %}
+          <tr><td>{{ p['code'] }}</td><td>{{ p['discount_percent'] }}</td><td>{{ p['used_count'] }}</td><td>{{ p['max_uses'] }}</td><td>{{ p['active'] }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Agent Performance</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>TG ID</th><th>User</th><th>Name</th><th>Balance</th><th>Lifetime Topup</th><th>Clients</th><th>Spent</th></tr>
+      {% for a in agents %}
+        <tr><td>{{ a['tg_id'] }}</td><td>{{ a['username'] }}</td><td>{{ a['full_name'] }}</td><td>{{ a['balance'] }}</td><td>{{ a['lifetime_topup'] }}</td><td>{{ a['clients'] }}</td><td>{{ a['spent'] }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</section>
+{% endblock %}

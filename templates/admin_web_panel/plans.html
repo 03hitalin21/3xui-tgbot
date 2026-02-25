@@ -1,0 +1,25 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Suggested Plans{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Create Suggested Plan</h2>
+  <form class="grid form-grid" method="post" action="/admin/plans">
+    <input type="hidden" name="token" value="{{ token }}" />
+    <label>Title<input name="title" placeholder="30 روزه 30 گیگ" /></label>
+    <label>Days<input name="days" type="number" value="30" /></label>
+    <label>GB (0 = unlimited)<input name="gb" type="number" value="30" /></label>
+    <label>limitIp<input name="limit_ip" type="number" value="1" min="1" max="3" /></label>
+    <div><button class="btn">Create Plan</button></div>
+  </form>
+</section>
+
+<section class="card table-wrap">
+  <h2>Existing Plans</h2>
+  <table>
+    <tr><th>ID</th><th>Title</th><th>Days</th><th>GB</th><th>limitIp</th></tr>
+    {% for p in rows %}
+      <tr><td>{{ p['id'] }}</td><td>{{ p['title'] }}</td><td>{{ p['days'] }}</td><td>{{ p['gb'] }}</td><td>{{ p['limit_ip'] }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

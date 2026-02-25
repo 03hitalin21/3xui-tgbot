@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Admin Panel{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin_web_panel/style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">3xUI Bot Admin</div>
+    <nav>
+      <a href="/?token={{ token }}">Overview</a>
+      <a href="/dashboard?token={{ token }}">Dashboard</a>
+      <a href="/admin/users?token={{ token }}">Agents</a>
+      <a href="/admin/topups?token={{ token }}">Topups</a>
+      <a href="/admin/plans?token={{ token }}">Plans</a>
+      <a href="/broadcast?token={{ token }}">Broadcast</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="card stack-sm">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

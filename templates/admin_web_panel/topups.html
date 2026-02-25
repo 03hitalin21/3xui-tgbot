@@ -1,0 +1,24 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Manual Topups{% endblock %}
+{% block content %}
+<section class="card table-wrap">
+  <h2>Topup Requests</h2>
+  <table>
+    <tr><th>ID</th><th>User</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Action</th></tr>
+    {% for t in rows %}
+      <tr>
+        <td>#{{ t['id'] }}</td>
+        <td>{{ t['tg_id'] }} ({{ t['username'] or '-' }})</td>
+        <td>{{ t['amount'] }}</td>
+        <td>{{ 'Uploaded' if t['receipt_file_id'] else 'Missing' }}</td>
+        <td><span class="badge {{ t['status'] }}">{{ t['status'] }}</span></td>
+        <td>
+          {% if t['status'] == 'pending' %}
+            <a class="btn" href="/admin/topups/{{ t['id'] }}/confirm?token={{ token }}">Confirm</a>
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

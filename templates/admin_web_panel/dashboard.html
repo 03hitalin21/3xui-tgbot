@@ -1,0 +1,36 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Analytics Dashboard{% endblock %}
+{% block content %}
+<section class="grid kpi-grid">
+  <div class="kpi"><span>Resellers</span><strong>{{ resellers }}</strong></div>
+  <div class="kpi"><span>Clients</span><strong>{{ clients }}</strong></div>
+  <div class="kpi"><span>Revenue</span><strong>{{ revenue }}</strong></div>
+  <div class="kpi"><span>Promo Codes</span><strong>{{ promos }}</strong></div>
+</section>
+
+<section class="card">
+  <h2>Exports</h2>
+  <div class="actions">
+    <a class="btn" href="/admin/export/transactions.csv?token={{ token }}">Transactions CSV</a>
+    <a class="btn" href="/admin/export/clients.csv?token={{ token }}">Clients CSV</a>
+    <a class="btn" href="/admin/export/agents.csv?token={{ token }}">Agents CSV</a>
+  </div>
+</section>
+
+<section class="split">
+  <div class="card">
+    <h2>Top Resellers by Revenue</h2>
+    <table>
+      <tr><th>User</th><th>Revenue</th><th>Clients</th></tr>
+      {% for r in top_rev %}<tr><td>{{ r['username'] or r['tg_id'] }}</td><td>{{ r['revenue'] }}</td><td>{{ r['clients'] }}</td></tr>{% endfor %}
+    </table>
+  </div>
+  <div class="card">
+    <h2>Top Resellers by Clients</h2>
+    <table>
+      <tr><th>User</th><th>Clients</th><th>Revenue</th></tr>
+      {% for r in top_clients %}<tr><td>{{ r['username'] or r['tg_id'] }}</td><td>{{ r['clients'] }}</td><td>{{ r['revenue'] }}</td></tr>{% endfor %}
+    </table>
+  </div>
+</section>
+{% endblock %}
