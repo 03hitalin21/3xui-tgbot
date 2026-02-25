@@ -13,8 +13,10 @@
         <td>{{ 'Uploaded' if t['receipt_file_id'] else 'Missing' }}</td>
         <td><span class="badge {{ t['status'] }}">{{ t['status'] }}</span></td>
         <td>
-          {% if t['status'] == 'pending' %}
+          {% if t['status'] == 'pending' and t['receipt_file_id'] %}
             <a class="btn" href="/admin/topups/{{ t['id'] }}/confirm?token={{ token }}">Confirm</a>
+          {% elif t['status'] == 'pending' %}
+            <span class="muted">Waiting receipt</span>
           {% else %}-{% endif %}
         </td>
       </tr>
