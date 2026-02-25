@@ -102,7 +102,7 @@ def is_referral_agent(role: str) -> bool:
 
 def get_user_role(tg_id: int) -> str:
     agent = db.get_agent(tg_id)
-    return agent["role"] if agent else "reseller"
+    return agent["role"] if agent else "buyer"
 
 
 def generate_referral_code(length: int = 8) -> str:
@@ -512,7 +512,7 @@ def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    role = "admin" if is_admin(u.id) else "reseller"
+    role = "admin" if is_admin(u.id) else get_user_role(u.id)
     db.ensure_agent(u.id, u.username or "", u.full_name or "", role=role)
     if context.args:
         code = context.args[0].strip()
@@ -563,7 +563,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    role = "admin" if is_admin(uid) else "reseller"
+    role = "admin" if is_admin(uid) else get_user_role(uid)
     db.ensure_agent(uid, q.from_user.username or "", q.from_user.full_name or "", role=role)
 
     data = q.data
@@ -888,7 +888,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "عملیات لغو شد. به منوی اصلی بازگشتید.",
             reply_markup=ReplyKeyboardRemove(),
         )
-        role = agent["role"] if agent else "reseller"
+        role = agent["role"] if agent else "buyer"
         await update.message.reply_text("منوی اصلی", reply_markup=main_menu(role))
         return
 
@@ -911,6 +911,52 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["promo_discount"] = disc
         reset_flow(context)
         await update.message.reply_text(f"کد تخفیف اعمال شد: {disc}% برای سفارش بعدی")
+        return
+
+    if flow == "register_agent_experience":
+        exp = parse_positive_int(txt)
+        if exp is None or exp > 50:
+            await update.message.reply_text("سابقه نامعتبر است. یک عدد بین 0 تا 50 ارسال کنید.", reply_markup=cancel_keyboard())
+            return
+        context.user_data["register_agent_experience"] = exp
+        context.user_data["flow"] = "register_agent_history"
+        await update.message.reply_text(
+            "لطفاً خلاصه سوابق کاری خود را ارسال کنید (حداقل 10 کاراکتر).",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    if flow == "register_agent_history":
+        history = txt.strip()
+        if len(history) < 10:
+            await update.message.reply_text("لطفاً توضیحات کامل‌تری از سابقه کاری خود ارسال کنید.", reply_markup=cancel_keyboard())
+            return
+        exp = context.user_data.pop("register_agent_experience", 0)
+        user = update.effective_user
+        db.ensure_agent(user.id, user.username or "", user.full_name or "", role="agent")
+        db.set_agent_registration(user.id, True)
+        db.set_agent_profile(user.id, exp, history)
+        reset_flow(context)
+        await update.message.reply_text(
+            "✅ ثبت‌نام نماینده انجام شد. اطلاعات شما برای تعیین قیمت اختصاصی ثبت شد.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await update.message.reply_text("منوی اصلی", reply_markup=main_menu(get_user_role(user.id)))
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_TELEGRAM_ID,
+                text=(
+                    "📥 ثبت‌نام نماینده جدید\n"
+                    f"ID: {user.id}\n"
+                    f"نام کاربری: @{user.username if user.username else '-'}\n"
+                    f"نام: {user.full_name or '-'}\n"
+                    f"سابقه: {exp} سال\n"
+                    f"سوابق: {history}\n"
+                    "برای قیمت اختصاصی: /admin/users"
+                ),
+            )
+        except Exception:
+            pass
         return
 
     # Admin flows
@@ -995,7 +1041,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not tid:
             await update.message.reply_text("شناسه کاربر نامعتبر است")
             return
-        db.ensure_agent(tid, "", "", role="reseller")
+        db.ensure_agent(tid, "", "", role="buyer")
         bal = db.add_balance(tid, amount, "topup.admin", meta=f"by:{uid}")
         reset_flow(context)
         logger.info("admin_charge_wallet | admin=%s | target=%s | amount=%s", uid, tid, amount)
@@ -1182,7 +1228,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "عملیات لغو شد. به منوی اصلی بازگشتید.",
                 reply_markup=ReplyKeyboardRemove(),
             )
-            role = agent["role"] if agent else "reseller"
+            role = agent["role"] if agent else "buyer"
             await update.message.reply_text("منوی اصلی", reply_markup=main_menu(role))
             return
         if v not in ["y", "yes"]:
@@ -1454,9 +1500,12 @@ async def approve_topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def register_agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    db.ensure_agent(u.id, u.username or "", u.full_name or "", role="agent")
-    db.set_agent_registration(u.id, True)
-    await update.message.reply_text("✅ ثبت‌نام نماینده انجام شد. قیمت اختصاصی توسط ادمین قابل تنظیم است.")
+    db.ensure_agent(u.id, u.username or "", u.full_name or "", role="buyer")
+    context.user_data["flow"] = "register_agent_experience"
+    await update.message.reply_text(
+        "برای ثبت‌نام نماینده، لطفاً تعداد سال سابقه فروش VPN را ارسال کنید (مثال: 2).",
+        reply_markup=cancel_keyboard(),
+    )
 
 
 async def use_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

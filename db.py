@@ -39,7 +39,7 @@ def init_db() -> None:
                 tg_id INTEGER PRIMARY KEY,
                 username TEXT,
                 full_name TEXT,
-                role TEXT NOT NULL DEFAULT 'reseller',
+                role TEXT NOT NULL DEFAULT 'buyer',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 balance REAL NOT NULL DEFAULT 0,
                 lifetime_topup REAL NOT NULL DEFAULT 0,
@@ -47,6 +47,8 @@ def init_db() -> None:
                 is_registered INTEGER NOT NULL DEFAULT 0,
                 custom_price_per_gb REAL,
                 custom_price_per_day REAL,
+                experience_years INTEGER,
+                work_history TEXT,
                 referral_code TEXT,
                 referred_by INTEGER,
                 created_at INTEGER NOT NULL,
@@ -153,11 +155,13 @@ def init_db() -> None:
         )
 
         # Migrations for older DBs
-        _ensure_column(conn, "agents", "role", "role TEXT NOT NULL DEFAULT 'reseller'")
+        _ensure_column(conn, "agents", "role", "role TEXT NOT NULL DEFAULT 'buyer'")
         _ensure_column(conn, "agents", "is_active", "is_active INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "agents", "is_registered", "is_registered INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "agents", "custom_price_per_gb", "custom_price_per_gb REAL")
         _ensure_column(conn, "agents", "custom_price_per_day", "custom_price_per_day REAL")
+        _ensure_column(conn, "agents", "experience_years", "experience_years INTEGER")
+        _ensure_column(conn, "agents", "work_history", "work_history TEXT")
         _ensure_column(conn, "agents", "referral_code", "referral_code TEXT")
         _ensure_column(conn, "agents", "referred_by", "referred_by INTEGER")
         _ensure_column(conn, "promo_codes", "discount_type", "discount_type TEXT NOT NULL DEFAULT 'percent'")
@@ -213,7 +217,7 @@ def get_setting_float_default(key: str, default: float) -> float:
     return float(r["value"]) if r else default
 
 
-def ensure_agent(tg_id: int, username: str = "", full_name: str = "", role: str = "reseller") -> None:
+def ensure_agent(tg_id: int, username: str = "", full_name: str = "", role: str = "buyer") -> None:
     ts = now_ts()
     with get_conn() as conn:
         conn.execute(
@@ -447,6 +451,16 @@ def set_agent_registration(tg_id: int, registered: bool) -> None:
         conn.execute(
             "UPDATE agents SET is_registered=?, updated_at=? WHERE tg_id=?",
             (1 if registered else 0, now_ts(), tg_id),
+        )
+
+
+
+
+def set_agent_profile(tg_id: int, experience_years: Optional[int], work_history: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE agents SET experience_years=?, work_history=?, updated_at=? WHERE tg_id=?",
+            (experience_years, work_history.strip(), now_ts(), tg_id),
         )
 
 
