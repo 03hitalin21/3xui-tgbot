@@ -2,8 +2,8 @@
 {% block title %}Admin Overview{% endblock %}
 {% block content %}
 <section class="grid kpi-grid">
-  <div class="kpi"><span>Price / GB</span><strong>{{ price_per_gb }}</strong></div>
-  <div class="kpi"><span>Price / Day</span><strong>{{ price_per_day }}</strong></div>
+  <div class="kpi"><span>Default Price / GB (Toman)</span><strong>{{ price_per_gb }}</strong></div>
+  <div class="kpi"><span>Default Price / Day (Toman)</span><strong>{{ price_per_day }}</strong></div>
   <div class="kpi"><span>Unlimited 1 IP</span><strong>{{ price_unlimited_ip1 }}</strong></div>
   <div class="kpi"><span>Unlimited 2 IP</span><strong>{{ price_unlimited_ip2 }}</strong></div>
   <div class="kpi"><span>Unlimited 3 IP</span><strong>{{ price_unlimited_ip3 }}</strong></div>
@@ -13,11 +13,14 @@
   <h2>Pricing</h2>
   <form class="grid form-grid" method="post" action="/pricing">
     <input type="hidden" name="token" value="{{ token }}" />
-    <label>Price / GB<input name="price_per_gb" value="{{ price_per_gb }}" /></label>
-    <label>Price / Day<input name="price_per_day" value="{{ price_per_day }}" /></label>
+    <label>Default Price / GB (Toman)<input name="price_per_gb" value="{{ price_per_gb }}" /></label>
+    <label>Default Price / Day (Toman)<input name="price_per_day" value="{{ price_per_day }}" /></label>
     <label>Unlimited IP1<input name="price_unlimited_ip1" value="{{ price_unlimited_ip1 }}" /></label>
     <label>Unlimited IP2<input name="price_unlimited_ip2" value="{{ price_unlimited_ip2 }}" /></label>
     <label>Unlimited IP3<input name="price_unlimited_ip3" value="{{ price_unlimited_ip3 }}" /></label>
+    <label style="grid-column: 1 / -1;">Manual Payment Details
+      <textarea name="manual_payment_details" rows="5" placeholder="Bank name, card number, account holder...">{{ manual_payment_details }}</textarea>
+    </label>
     <div><button class="btn">Save Pricing</button></div>
   </form>
 </section>
