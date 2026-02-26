@@ -190,6 +190,7 @@ def low_balance_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("شارژ کیف پول", callback_data="menu:wallet")],
+            [InlineKeyboardButton("ثبت درخواست شارژ", callback_data="menu:topup")],
             [InlineKeyboardButton("پشتیبانی", callback_data="menu:support")],
             [InlineKeyboardButton("ادامه", callback_data="menu:home")],
         ]
@@ -646,8 +647,19 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if payment_details:
             msg.append("")
             msg.append(payment_details)
-            msg.append("برای شارژ: /topup <amount> را بزنید و رسید را ارسال کنید.")
-        await q.message.reply_text("\n".join(msg))
+            msg.append("برای شارژ روی «ثبت درخواست شارژ» بزنید.")
+        await q.message.reply_text(
+            "\n".join(msg),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ثبت درخواست شارژ", callback_data="menu:topup")]]),
+        )
+        return
+
+    if data == "menu:topup":
+        context.user_data["flow"] = "topup_amount"
+        await q.message.reply_text(
+            "مبلغ شارژ را وارد کنید (فقط عدد). مثال: 50000",
+            reply_markup=cancel_keyboard(),
+        )
         return
 
     if data == "menu:tx":
@@ -957,6 +969,26 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+        return
+
+    if flow == "topup_amount":
+        try:
+            amt = float(txt)
+        except ValueError:
+            await update.message.reply_text("مبلغ باید عدد باشد", reply_markup=cancel_keyboard())
+            return
+        if amt <= 0:
+            await update.message.reply_text("مبلغ باید بیشتر از صفر باشد", reply_markup=cancel_keyboard())
+            return
+        req_id = db.create_topup_request(uid, amt)
+        context.user_data["flow"] = "topup_receipt"
+        context.user_data["topup_request_id"] = req_id
+        details = manual_payment_text()
+        msg = [f"درخواست #{req_id} ثبت شد."]
+        if details:
+            msg.append(details)
+        msg.append("پس از انتقال، لطفاً رسید پرداخت را به صورت عکس همینجا ارسال کنید.")
+        await update.message.reply_text("\n\n".join(msg), reply_markup=ReplyKeyboardRemove())
         return
 
     # Admin flows
@@ -1442,7 +1474,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "راهنما:\n"
         "/start - شروع\n/menu - منو\n/cancel - لغو\n"
-        "/topup مبلغ - ثبت درخواست شارژ\n/registeragent - ثبت به عنوان نماینده"
+        "ثبت درخواست شارژ از داخل منو (بدون نیاز به دستور)\n/registeragent - ثبت به عنوان نماینده"
     )
 
 
