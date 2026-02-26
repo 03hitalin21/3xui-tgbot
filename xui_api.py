@@ -6,7 +6,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-BASE_URL = os.getenv("XUI_BASE_URL", "")
+BASE_URL = os.getenv("XUI_BASE_URL", "").strip().rstrip("/")
 USERNAME = os.getenv("XUI_USERNAME", "")
 PASSWORD = os.getenv("XUI_PASSWORD", "")
 SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
@@ -38,9 +38,23 @@ class XUIApi:
         return self.s.request(method, url, timeout=timeout, **kwargs)
 
     def login(self) -> None:
-        r = self._request("POST", f"{BASE_URL}/login", data={"username": USERNAME, "password": PASSWORD})
-        if r.status_code != 200:
-            raise RuntimeError("x-ui login failed")
+        login_paths = ["/login", "/login/", "/panel/login", "/panel/login/"]
+        last_error: str = ""
+
+        for path in login_paths:
+            try:
+                r = self._request("POST", f"{BASE_URL}{path}", data={"username": USERNAME, "password": PASSWORD})
+                if r.status_code == 200:
+                    return
+                last_error = f"status={r.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+
+        raise RuntimeError(
+            "x-ui login failed. "
+            f"base_url={BASE_URL} connect_timeout={CONNECT_TIMEOUT} read_timeout={READ_TIMEOUT} retries={REQUEST_RETRIES}. "
+            f"last_error={last_error}"
+        )
 
     def list_inbounds(self) -> List[Dict[str, Any]]:
         endpoints = [
@@ -153,3 +167,40 @@ def vless_link(uid: str, inbound: dict, remark: str) -> str:
 
 def subscription_link(sub_id: str) -> str:
     return f"https://{SERVER_HOST}:{SUBSCRIPTION_PORT}/sub/{sub_id}"
+
+
+def build_client_payload(
+    client_id: str,
+    email: str,
+    expiry_time_ms: int,
+    gb: int,
+    sub_id: str,
+    tg_id: str,
+    *,
+    enable: bool = True,
+    flow: str = "",
+    comment: str = "tg",
+    reset: int = 0,
+    limit_ip: int | None = None,
+) -> dict:
+    total_gb_val = max(int(gb), 0)
+    if total_gb_val == 0:
+        # Unlimited traffic: totalGB must be 0 and limitIp defaults to 1 (unless admin/user picked 2 or 3).
+        effective_limit_ip = limit_ip if limit_ip in {1, 2, 3} else 1
+    else:
+        effective_limit_ip = limit_ip if limit_ip in {1, 2, 3} else 2
+
+    return {
+        "id": client_id,
+        "email": email,
+        "enable": bool(enable),
+        "expiryTime": int(expiry_time_ms),
+        "totalGB": int(total_gb_val) * 1024**3,
+        "flow": flow,
+        "limitIp": effective_limit_ip,
+        "tgId": str(tg_id),
+        "subId": sub_id,
+        "comment": comment,
+        "reset": int(reset),
+    }
+

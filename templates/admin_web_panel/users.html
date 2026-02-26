@@ -12,12 +12,16 @@
 
 <section class="card table-wrap">
   <table>
-    <tr><th>Username</th><th>Telegram ID</th><th>Role</th><th>Balance</th><th>Join Date</th><th>Clients</th><th>Actions</th><th>Exclusive Pricing</th></tr>
+    <tr><th>Username</th><th>Full Name</th><th>Telegram ID</th><th>Role</th><th>Registered</th><th>Experience</th><th>Work History</th><th>Balance</th><th>Join Date</th><th>Clients</th><th>Actions</th><th>Exclusive Pricing</th></tr>
     {% for u in users %}
       <tr>
         <td>{{ u['username'] or '-' }}</td>
+        <td>{{ u['full_name'] or '-' }}</td>
         <td>{{ u['tg_id'] }}</td>
         <td>{{ u['role'] }}</td>
+        <td>{{ 'yes' if u['is_registered'] else 'no' }}</td>
+        <td>{{ u['experience_years'] if u['experience_years'] is not none else '-' }}</td>
+        <td>{{ u['work_history'][:80] ~ ('...' if u['work_history'] and u['work_history']|length > 80 else '') if u['work_history'] else '-' }}</td>
         <td>{{ '%.2f'|format(u['balance']) }}</td>
         <td>{{ u['created_at'] }}</td>
         <td>{{ u['client_count'] }}</td>
@@ -25,8 +29,8 @@
         <td>
           <form method="post" action="/admin/user/{{ u['tg_id'] }}/pricing" class="inline-form">
             <input type="hidden" name="token" value="{{ token }}" />
-            <input name="price_per_gb" placeholder="per GB" />
-            <input name="price_per_day" placeholder="per Day" />
+            <input name="price_per_gb" placeholder="per GB (toman)" />
+            <input name="price_per_day" placeholder="per Day (toman)" />
             <button class="btn">Save</button>
           </form>
         </td>
