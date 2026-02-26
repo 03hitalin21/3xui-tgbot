@@ -46,4 +46,5 @@ label{display:block;font-size:.9rem;color:#d1d5db}
 .badge.approved{background:#14532d}
 .badge.pending{background:#7c2d12}
 .stack-sm>*+*{margin-top:8px}
+.muted{color:var(--muted);font-size:.85rem}
 @media (max-width: 900px){.split{grid-template-columns:1fr}.search-row{grid-template-columns:1fr}}
