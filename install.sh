@@ -3,6 +3,14 @@ set -euo pipefail
 
 REPO_URL="https://github.com/03hitalin21/3xui-tgbot.git"
 TARGET_DIR_DEFAULT="${HOME}/3xui-tgbot"
+REQUIRED_ENV_VARS=(
+  TELEGRAM_BOT_TOKEN
+  XUI_BASE_URL
+  XUI_USERNAME
+  XUI_PASSWORD
+  XUI_SERVER_HOST
+  WEBHOOK_BASE_URL
+)
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
@@ -89,6 +97,149 @@ clone_or_update_repo() {
     echo "Cloning repository into $target_dir..."
     git clone "$REPO_URL" "$target_dir"
   fi
+}
+
+is_installed() {
+  local target_dir="$1"
+  [[ -d "$target_dir/.git" ]]
+}
+
+detect_default_branch() {
+  local target_dir="$1"
+  local branch
+
+  branch="$(git -C "$target_dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+  if [[ -n "$branch" ]]; then
+    printf '%s' "$branch"
+    return 0
+  fi
+
+  branch="$(git -C "$target_dir" ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')"
+  if [[ -n "$branch" ]]; then
+    printf '%s' "$branch"
+    return 0
+  fi
+
+  return 1
+}
+
+stop_services_for_upgrade() {
+  local target_dir="$1"
+  local systemd_script="$target_dir/scripts/setup_systemd.sh"
+
+  echo "[INFO] Stopping running services..."
+  if command_exists systemctl && [[ -x "$systemd_script" ]]; then
+    if ! (cd "$target_dir" && ./scripts/setup_systemd.sh stop "$target_dir"); then
+      echo "[ERROR] Failed to stop systemd services."
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ -x "$target_dir/scripts/manage_services.sh" ]]; then
+    if ! (cd "$target_dir" && ./scripts/manage_services.sh stop "$target_dir"); then
+      echo "[ERROR] Failed to stop script-managed services."
+      return 1
+    fi
+    return 0
+  fi
+
+  echo "[INFO] No service management scripts found; continuing."
+  return 0
+}
+
+start_services_for_upgrade() {
+  local target_dir="$1"
+  local systemd_script="$target_dir/scripts/setup_systemd.sh"
+
+  echo "[INFO] Starting services..."
+  if command_exists systemctl && [[ -x "$systemd_script" ]]; then
+    (cd "$target_dir" && ./scripts/setup_systemd.sh restart "$target_dir")
+    return
+  fi
+
+  (cd "$target_dir" && ./scripts/manage_services.sh start "$target_dir")
+}
+
+backup_upgrade_state() {
+  local target_dir="$1"
+  local ts backup_dir
+  ts="$(date +%Y%m%d-%H%M%S)"
+  backup_dir="$target_dir/backups/$ts"
+  mkdir -p "$backup_dir"
+
+  echo "[INFO] Creating backup at $backup_dir"
+  [[ -f "$target_dir/.env" ]] && cp -a "$target_dir/.env" "$backup_dir/.env"
+  [[ -f "$target_dir/agents.json" ]] && cp -a "$target_dir/agents.json" "$backup_dir/agents.json"
+  [[ -f "$target_dir/data/bot.db" ]] && cp -a "$target_dir/data/bot.db" "$backup_dir/bot.db"
+  [[ -d "$target_dir/data" ]] && cp -a "$target_dir/data" "$backup_dir/data"
+
+  echo "[INFO] Backup complete"
+}
+
+prompt_missing_env_vars() {
+  local target_dir="$1"
+  local env_file="$target_dir/.env"
+  local updated=false
+
+  [[ -f "$env_file" ]] || return 1
+
+  for key in "${REQUIRED_ENV_VARS[@]}"; do
+    if ! grep -Eq "^${key}=" "$env_file"; then
+      [[ "$updated" == false ]] && cp -a "$env_file" "$env_file.bak"
+      local value
+      value="$(sanitize_env_value "$(prompt_value "Missing required env var ${key}" "")")"
+      echo "${key}=${value}" >> "$env_file"
+      updated=true
+    fi
+  done
+
+  return 0
+}
+
+run_db_migrations() {
+  local target_dir="$1"
+  local db_path="$target_dir/data/bot.db"
+  mkdir -p "$target_dir/data"
+  echo "[INFO] Running database migrations on $db_path"
+  BOT_DB_PATH="$db_path" "$target_dir/.venv/bin/python" "$target_dir/scripts/migrate_db.py" "$db_path"
+}
+
+upgrade_existing_installation() {
+  local target_dir="$1"
+  local branch
+
+  branch="$(detect_default_branch "$target_dir")" || {
+    echo "[ERROR] Could not detect origin default branch."
+    return 1
+  }
+
+  echo "[INFO] Detected default branch: $branch"
+  stop_services_for_upgrade "$target_dir" || return 1
+  backup_upgrade_state "$target_dir" || return 1
+
+  echo "[INFO] Fetching latest code..."
+  git -C "$target_dir" fetch --all --prune
+  git -C "$target_dir" checkout "$branch"
+  if ! git -C "$target_dir" pull --ff-only origin "$branch"; then
+    echo "[ERROR] Fast-forward pull failed. Services remain stopped for safety."
+    return 1
+  fi
+
+  prepare_venv "$target_dir"
+  run_db_migrations "$target_dir"
+
+  if [[ ! -f "$target_dir/.env" ]]; then
+    echo "[INFO] .env is missing; entering existing interactive setup menu."
+    primary_menu "$target_dir"
+    return 0
+  fi
+
+  prompt_missing_env_vars "$target_dir"
+  start_services_for_upgrade "$target_dir"
+
+  echo "[INFO] Upgrade completed successfully."
+  return 0
 }
 
 write_env_file() {
@@ -320,7 +471,17 @@ main() {
   require_root_or_sudo
   install_runtime_if_missing
 
-  local target_dir
+  local target_dir="${1:-$TARGET_DIR_DEFAULT}"
+
+  if is_installed "$target_dir"; then
+    echo "[INFO] Existing installation found at $target_dir. Running in-place upgrade."
+    if upgrade_existing_installation "$target_dir"; then
+      echo "✅ Upgrade finished."
+      exit 0
+    fi
+    exit 1
+  fi
+
   target_dir="$(prompt_value "Install directory" "$TARGET_DIR_DEFAULT")"
 
   clone_or_update_repo "$target_dir"

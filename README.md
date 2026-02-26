@@ -16,6 +16,10 @@ Minimal Telegram bot + admin panel integration for 3xui.
 bash <(curl -fsSL https://raw.githubusercontent.com/03hitalin21/3xui-tgbot/New10/install.sh)
 ```
 
+Re-run the same one-liner anytime to perform an in-place upgrade.
+The installer now auto-detects existing installs, creates a backup under `backups/<timestamp>/`,
+pulls the latest code from the repository default branch, runs DB migrations, and restarts services.
+
 ## Environment
 
 ```bash
