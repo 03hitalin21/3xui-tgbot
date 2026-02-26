@@ -1,0 +1,2 @@
+-- Placeholder migration for upgrade framework bootstrap.
+-- Keep intentionally empty.

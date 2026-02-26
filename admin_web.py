@@ -95,6 +95,7 @@ INDEX = """
     Unlimited IP1: <input name='price_unlimited_ip1' value='{{price_unlimited_ip1}}'>
     Unlimited IP2: <input name='price_unlimited_ip2' value='{{price_unlimited_ip2}}'>
     Unlimited IP3: <input name='price_unlimited_ip3' value='{{price_unlimited_ip3}}'>
+    Manual payment details: <textarea name='manual_payment_details' rows='4'>{{manual_payment_details}}</textarea>
     <button>Save</button>
   </form>
 </div>
@@ -422,6 +423,7 @@ def index():
         price_unlimited_ip1=db.get_setting_float("price_unlimited_ip1"),
         price_unlimited_ip2=db.get_setting_float("price_unlimited_ip2"),
         price_unlimited_ip3=db.get_setting_float("price_unlimited_ip3"),
+        manual_payment_details=db.get_setting_text("manual_payment_details"),
         promos=db.list_promos(),
         agents=db.top_agents(),
         referral_stats=db.list_referral_stats(),
@@ -649,7 +651,10 @@ def confirm_topup(topup_id: int):
     if not auth_ok(request):
         return "Forbidden", 403
     try:
-        db.approve_topup_request(topup_id, 0, "approved by admin panel")
+        bal = db.approve_topup_request(topup_id, 0, "approved by admin panel")
+        req = db.get_topup_request(topup_id)
+        if req:
+            asyncio.run(_notify_topup_result(int(req["tg_id"]), topup_id, bal))
         flash(f"Topup #{topup_id} confirmed", "success")
     except ValueError as exc:
         flash(str(exc), "error")
@@ -661,16 +666,19 @@ def admin_plans():
     if not auth_ok(request):
         return "Forbidden", 403
     if request.method == "POST":
+        role_scope = (request.form.get("role_scope", "reseller").strip().lower() or "reseller")
+        if role_scope not in {"reseller", "agent", "all"}:
+            role_scope = "reseller"
         db.create_plan_template(
             request.form.get("title", "").strip() or "Plan",
             int(request.form.get("days", "30")),
             int(request.form.get("gb", "30")),
             int(request.form.get("limit_ip", "1")),
-            "agent",
+            role_scope,
         )
         flash("Plan created.", "success")
         return redirect(url_for("admin_plans", token=request.form.get("token")))
-    return render_template("admin_web_panel/plans.html", token=request.args.get("token"), rows=db.list_plan_templates("agent"))
+    return render_template("admin_web_panel/plans.html", token=request.args.get("token"), rows=db.list_plan_templates(None))
 
 
 @app.get("/admin/export/transactions.csv")
@@ -759,6 +767,14 @@ def broadcast_form():
     return render_template_string(BROADCAST, style=BASE_STYLE, token=request.args.get("token"), result=None)
 
 
+async def _notify_topup_result(tg_id: int, topup_id: int, balance: float):
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return
+    bot = Bot(token=token)
+    await bot.send_message(chat_id=tg_id, text=f"✅ درخواست شارژ #{topup_id} تایید شد. موجودی جدید شما: {int(balance) if float(balance).is_integer() else round(balance,2)} تومان")
+
+
 async def _broadcast(message: str, user_ids: List[int]) -> dict:
     bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN", ""))
     sent = 0
@@ -788,11 +804,29 @@ def broadcast_send():
 def pricing():
     if not auth_ok(request):
         return "Forbidden", 403
-    db.set_setting("price_per_gb", request.form["price_per_gb"])
-    db.set_setting("price_per_day", request.form["price_per_day"])
-    db.set_setting("price_unlimited_ip1", request.form.get("price_unlimited_ip1", "150000"))
-    db.set_setting("price_unlimited_ip2", request.form.get("price_unlimited_ip2", "230000"))
-    db.set_setting("price_unlimited_ip3", request.form.get("price_unlimited_ip3", "300000"))
+
+    fields = {
+        "price_per_gb": request.form.get("price_per_gb", "").strip(),
+        "price_per_day": request.form.get("price_per_day", "").strip(),
+        "price_unlimited_ip1": request.form.get("price_unlimited_ip1", "150000").strip(),
+        "price_unlimited_ip2": request.form.get("price_unlimited_ip2", "230000").strip(),
+        "price_unlimited_ip3": request.form.get("price_unlimited_ip3", "300000").strip(),
+    }
+
+    try:
+        parsed = {k: float(v) for k, v in fields.items()}
+    except ValueError:
+        flash("Pricing values must be numeric.", "error")
+        return redirect(url_for("index", token=request.form["token"]))
+
+    if any(v < 0 for v in parsed.values()):
+        flash("Pricing values must be zero or positive.", "error")
+        return redirect(url_for("index", token=request.form["token"]))
+
+    for key, value in parsed.items():
+        db.set_setting(key, str(value))
+    db.set_setting("manual_payment_details", request.form.get("manual_payment_details", "").strip())
+    flash("Pricing settings updated.", "success")
     return redirect(url_for("index", token=request.form["token"]))
 
 
