@@ -764,7 +764,15 @@ def export_agents():
 def broadcast_form():
     if not auth_ok(request):
         return "Forbidden", 403
-    return render_template_string(BROADCAST, style=BASE_STYLE, token=request.args.get("token"), result=None)
+    return render_template("admin_web_panel/broadcast.html", token=request.args.get("token"), result=None, message="")
+
+
+async def _notify_topup_result(tg_id: int, topup_id: int, balance: float):
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return
+    bot = Bot(token=token)
+    await bot.send_message(chat_id=tg_id, text=f"✅ درخواست شارژ #{topup_id} تایید شد. موجودی جدید شما: {int(balance) if float(balance).is_integer() else round(balance,2)} تومان")
 
 
 async def _notify_topup_result(tg_id: int, topup_id: int, balance: float):
@@ -794,10 +802,10 @@ def broadcast_send():
         return "Forbidden", 403
     message = request.form.get("message", "").strip()
     if not message:
-        return render_template_string(BROADCAST, style=BASE_STYLE, token=request.form.get("token"), result=None)
+        return render_template("admin_web_panel/broadcast.html", token=request.form.get("token"), result=None, message="")
     user_ids = db.get_all_user_ids()
     result = asyncio.run(_broadcast(message, user_ids))
-    return render_template_string(BROADCAST, style=BASE_STYLE, token=request.form.get("token"), result=result)
+    return render_template("admin_web_panel/broadcast.html", token=request.form.get("token"), result=result, message=message)
 
 
 @app.post("/pricing")
