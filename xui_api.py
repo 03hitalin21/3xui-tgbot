@@ -209,7 +209,7 @@ def build_client_payload(
     tg_id: str,
     *,
     enable: bool = True,
-    flow: str = "",
+    flow: str = "xtls-rprx-vision",
     comment: str = "tg",
     reset: int = 0,
     limit_ip: int | None = None,
