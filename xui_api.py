@@ -70,7 +70,7 @@ class XUIApi:
         raise RuntimeError("No candidate URL available")
 
     def login(self) -> None:
-        login_paths = ["/login", "/login/", "/panel/login", "/panel/login/"]
+        login_paths = ["/login"]
         last_error: str = ""
 
         for base in self._base_candidates():
