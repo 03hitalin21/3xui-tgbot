@@ -6,7 +6,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-BASE_URL = os.getenv("XUI_BASE_URL", "")
+BASE_URL = os.getenv("XUI_BASE_URL", "").strip().rstrip("/")
 USERNAME = os.getenv("XUI_USERNAME", "")
 PASSWORD = os.getenv("XUI_PASSWORD", "")
 SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
@@ -38,9 +38,23 @@ class XUIApi:
         return self.s.request(method, url, timeout=timeout, **kwargs)
 
     def login(self) -> None:
-        r = self._request("POST", f"{BASE_URL}/login", data={"username": USERNAME, "password": PASSWORD})
-        if r.status_code != 200:
-            raise RuntimeError("x-ui login failed")
+        login_paths = ["/login", "/login/", "/panel/login", "/panel/login/"]
+        last_error: str = ""
+
+        for path in login_paths:
+            try:
+                r = self._request("POST", f"{BASE_URL}{path}", data={"username": USERNAME, "password": PASSWORD})
+                if r.status_code == 200:
+                    return
+                last_error = f"status={r.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+
+        raise RuntimeError(
+            "x-ui login failed. "
+            f"base_url={BASE_URL} connect_timeout={CONNECT_TIMEOUT} read_timeout={READ_TIMEOUT} retries={REQUEST_RETRIES}. "
+            f"last_error={last_error}"
+        )
 
     def list_inbounds(self) -> List[Dict[str, Any]]:
         endpoints = [
