@@ -68,6 +68,7 @@ class XUIApi:
         login_paths = ["/login", "/login/", "/panel/login", "/panel/login/"]
         last_error: str = ""
 
+<<<<<<< codex/add-manual-transfer-payment-method
         for base in self._base_candidates():
             for path in login_paths:
                 try:
@@ -77,6 +78,16 @@ class XUIApi:
                     last_error = f"url={base}{path} status={r.status_code}"
                 except Exception as exc:
                     last_error = f"url={base}{path} err={exc}"
+=======
+        for path in login_paths:
+            try:
+                r = self._request("POST", f"{BASE_URL}{path}", data={"username": USERNAME, "password": PASSWORD})
+                if r.status_code == 200:
+                    return
+                last_error = f"status={r.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+>>>>>>> New11
 
         raise RuntimeError(
             "x-ui login failed. "
