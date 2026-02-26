@@ -1,0 +1,21 @@
+{% extends "admin_web_panel/base.html" %}
+{% block title %}Broadcast{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Broadcast Message</h2>
+  <p class="muted">Send a message to all active users.</p>
+  <form method="post" action="/broadcast" class="stack-sm">
+    <input type="hidden" name="token" value="{{ token }}" />
+    <textarea name="message" rows="6" placeholder="Your message...">{{ message or '' }}</textarea>
+    <div><button class="btn">Send Broadcast</button></div>
+  </form>
+</section>
+
+{% if result %}
+<section class="card">
+  <h3>Result</h3>
+  <div>Sent: <b>{{ result.sent }}</b></div>
+  <div>Failed: <b>{{ result.failed }}</b></div>
+</section>
+{% endif %}
+{% endblock %}
