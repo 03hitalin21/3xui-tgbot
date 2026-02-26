@@ -37,18 +37,51 @@ class XUIApi:
         timeout = kwargs.pop("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
         return self.s.request(method, url, timeout=timeout, **kwargs)
 
+    def _base_candidates(self) -> List[str]:
+        # Keep primary behavior identical to the known working flow:
+        # BASE_URL + /login and BASE_URL + /panel/api/...
+        bases = [BASE_URL.rstrip("/")]
+
+        # Optional compatibility: if BASE_URL explicitly ends with '/panel',
+        # also try root base without that exact suffix.
+        if bases[0].endswith("/panel"):
+            bases.append(bases[0][:-len("/panel")])
+
+        seen = set()
+        out: List[str] = []
+        for b in bases:
+            if b and b not in seen:
+                seen.add(b)
+                out.append(b)
+        return out
+
+    def _request_candidates(self, method: str, paths: List[str], **kwargs):
+        last_exc: Exception | None = None
+        for base in self._base_candidates():
+            for path in paths:
+                url = f"{base}{path}"
+                try:
+                    return self._request(method, url, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No candidate URL available")
+
     def login(self) -> None:
         login_paths = ["/login", "/login/", "/panel/login", "/panel/login/"]
         last_error: str = ""
 
-        for path in login_paths:
-            try:
-                r = self._request("POST", f"{BASE_URL}{path}", data={"username": USERNAME, "password": PASSWORD})
-                if r.status_code == 200:
-                    return
-                last_error = f"status={r.status_code}"
-            except Exception as exc:
-                last_error = str(exc)
+        for base in self._base_candidates():
+            for path in login_paths:
+                try:
+                    r = self._request("POST", f"{base}{path}", data={"username": USERNAME, "password": PASSWORD})
+                    if r.status_code == 200:
+                        return
+                    last_error = f"url={base}{path} status={r.status_code}"
+                except Exception as exc:
+                    last_error = f"url={base}{path} err={exc}"
 
         raise RuntimeError(
             "x-ui login failed. "
@@ -58,15 +91,20 @@ class XUIApi:
 
     def list_inbounds(self) -> List[Dict[str, Any]]:
         endpoints = [
-            ("get", f"{BASE_URL}/panel/api/inbounds/list"),
-            ("post", f"{BASE_URL}/panel/api/inbounds/list"),
-            ("get", f"{BASE_URL}/panel/api/inbounds/get/all"),
-            ("post", f"{BASE_URL}/panel/api/inbounds/get/all"),
-            ("get", f"{BASE_URL}/xui/API/inbounds/"),
+            ("GET", ["/panel/api/inbounds/list"]),
+            ("POST", ["/panel/api/inbounds/list"]),
+            ("GET", ["/panel/api/inbounds/get/all"]),
+            ("POST", ["/panel/api/inbounds/get/all"]),
+            # Compatibility fallbacks
+            ("GET", ["/xui/API/inbounds/"]),
+            ("GET", ["/api/inbounds/list"]),
+            ("POST", ["/api/inbounds/list"]),
+            ("GET", ["/api/inbounds/get/all"]),
+            ("POST", ["/api/inbounds/get/all"]),
         ]
-        for method, ep in endpoints:
+        for method, paths in endpoints:
             try:
-                r = self._request(method.upper(), ep)
+                r = self._request_candidates(method, paths)
                 data = r.json()
                 if isinstance(data, list):
                     return data
@@ -80,7 +118,7 @@ class XUIApi:
         return []
 
     def get_inbound(self, inbound_id: int) -> Dict[str, Any]:
-        r = self._request("GET", f"{BASE_URL}/panel/api/inbounds/get/{inbound_id}")
+        r = self._request_candidates("GET", [f"/panel/api/inbounds/get/{inbound_id}", f"/api/inbounds/get/{inbound_id}"])
         data = r.json()
         if not data.get("success"):
             raise RuntimeError("Failed to fetch inbound")
@@ -96,13 +134,13 @@ class XUIApi:
 
     def add_clients(self, inbound_id: int, clients: List[dict]) -> None:
         payload = {"id": inbound_id, "settings": json.dumps({"clients": clients})}
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/addClient", data=payload)
+        r = self._request_candidates("POST", ["/panel/api/inbounds/addClient", "/api/inbounds/addClient"], data=payload)
         if not r.json().get("success"):
             raise RuntimeError(f"Client creation failed: {r.text}")
 
     def update_clients(self, inbound_id: int, clients: List[dict]) -> None:
         payload = {"id": inbound_id, "settings": json.dumps({"clients": clients})}
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/updateClient", data=payload)
+        r = self._request_candidates("POST", ["/panel/api/inbounds/updateClient", "/api/inbounds/updateClient"], data=payload)
         if not r.json().get("success"):
             raise RuntimeError(f"Client update failed: {r.text}")
 
@@ -111,20 +149,20 @@ class XUIApi:
         self.update_clients(inbound_id, [client_payload])
 
     def delete_client(self, inbound_id: int, client_uuid: str) -> None:
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}")
+        r = self._request_candidates("POST", [f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}", f"/api/inbounds/{inbound_id}/delClient/{client_uuid}"])
         data = r.json()
         if not data.get("success"):
             raise RuntimeError(f"Client delete failed: {r.text}")
 
     def last_online(self) -> Dict[str, int]:
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/lastOnline")
+        r = self._request_candidates("POST", ["/panel/api/inbounds/lastOnline", "/api/inbounds/lastOnline"])
         data = r.json()
         if not data.get("success"):
             raise RuntimeError("Failed to fetch lastOnline")
         return data.get("obj", {})
 
     def onlines(self) -> List[str]:
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/onlines")
+        r = self._request_candidates("POST", ["/panel/api/inbounds/onlines", "/api/inbounds/onlines"])
         data = r.json()
         if not data.get("success"):
             raise RuntimeError("Failed to fetch onlines")
@@ -147,7 +185,7 @@ class XUIApi:
             "streamSettings": json.dumps({"network": network, "security": "none"}),
             "sniffing": json.dumps({"enabled": False, "destOverride": ["http", "tls"]}),
         }
-        r = self._request("POST", f"{BASE_URL}/panel/api/inbounds/add", data=payload)
+        r = self._request_candidates("POST", ["/panel/api/inbounds/add", "/api/inbounds/add"], data=payload)
         data = r.json()
         if not data.get("success"):
             raise RuntimeError(f"Failed to create inbound: {r.text}")
