@@ -92,15 +92,8 @@ class XUIApi:
     def list_inbounds(self) -> List[Dict[str, Any]]:
         endpoints = [
             ("GET", ["/panel/api/inbounds/list"]),
-            ("POST", ["/panel/api/inbounds/list"]),
-            ("GET", ["/panel/api/inbounds/get/all"]),
-            ("POST", ["/panel/api/inbounds/get/all"]),
+            ("POST", ["/panel/api/inbounds/list"])
             # Compatibility fallbacks
-            ("GET", ["/xui/API/inbounds/"]),
-            ("GET", ["/api/inbounds/list"]),
-            ("POST", ["/api/inbounds/list"]),
-            ("GET", ["/api/inbounds/get/all"]),
-            ("POST", ["/api/inbounds/get/all"]),
         ]
         for method, paths in endpoints:
             try:
