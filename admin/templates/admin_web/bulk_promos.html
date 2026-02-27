@@ -1,0 +1,40 @@
+<!doctype html>
+<title>Bulk Promo Generator</title>
+{{style}}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class='card'>
+      {% for category, message in messages %}
+        <div class='flash {{category}}'>{{message}}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+<h1>Bulk Promo Code Generator</h1>
+<div class='card'>
+  <a href='/dashboard?token={{token}}'>Back</a>
+</div>
+<div class='card'>
+  <form method='post' action='/admin/promos/bulk-generate'>
+    <input type='hidden' name='token' value='{{token}}'>
+    Quantity (1-1000): <input name='quantity' value='{{form.quantity}}'>
+    Discount type:
+    <select name='discount_type'>
+      <option value='percent' {% if form.discount_type == 'percent' %}selected{% endif %}>Percentage</option>
+      <option value='gb_free' {% if form.discount_type == 'gb_free' %}selected{% endif %}>Free GB</option>
+      <option value='fixed_amount' {% if form.discount_type == 'fixed_amount' %}selected{% endif %}>Fixed amount</option>
+    </select>
+    Value: <input name='value' value='{{form.value}}'>
+    Usage limit per code (0 = unlimited): <input name='max_uses' value='{{form.max_uses}}'>
+    Expiry days (blank = no expiry): <input name='expiry_days' value='{{form.expiry_days}}'>
+    Optional prefix: <input name='prefix' value='{{form.prefix}}' placeholder='SPRING25-'>
+    <button name='action' value='generate'>Generate</button>
+    <button name='action' value='download'>Generate & Download CSV</button>
+  </form>
+</div>
+{% if codes %}
+<div class='card'>
+  <h3>Generated {{codes|length}} codes</h3>
+  <textarea rows='10' readonly>{% for c in codes %}{{c}}\n{% endfor %}</textarea>
+</div>
+{% endif %}

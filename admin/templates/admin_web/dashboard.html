@@ -1,0 +1,58 @@
+<!doctype html>
+<title>Admin Dashboard</title>
+{{style}}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class='card'>
+      {% for category, message in messages %}
+        <div class='flash {{category}}'>{{message}}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+<h1>Analytics Dashboard</h1>
+<div class='card'>
+  <a href='/?token={{token}}'>Back</a> |
+  <a href='/broadcast?token={{token}}'>Broadcast</a> |
+  <a href='/admin/users?token={{token}}'>Users/Agents</a>
+</div>
+<div class='card'>
+  <h3>Exports</h3>
+  <a href='/admin/export/transactions.csv?token={{token}}'>Transactions CSV</a> |
+  <a href='/admin/export/clients.csv?token={{token}}'>Clients CSV</a> |
+  <a href='/admin/export/agents.csv?token={{token}}'>Agents CSV</a>
+</div>
+<div class='card'>
+  <h3>Promotions</h3>
+  <a href='/admin/promos/bulk-generate?token={{token}}'>Bulk promo generator</a>
+</div>
+<div class='card grid'>
+  <div class='pill'>Resellers<br><b>{{resellers}}</b></div>
+  <div class='pill'>Clients<br><b>{{clients}}</b></div>
+  <div class='pill'>Revenue<br><b>{{revenue}}</b></div>
+  <div class='pill'>Promo Codes<br><b>{{promos}}</b></div>
+</div>
+<div class='card'>
+  <h3>Top 5 Resellers (Revenue)</h3>
+  <table><tr><th>User</th><th>Revenue</th><th>Clients</th></tr>
+  {% for r in top_rev %}<tr><td>{{r['username'] or r['tg_id']}}</td><td>{{r['revenue']}}</td><td>{{r['clients']}}</td></tr>{% endfor %}
+  </table>
+</div>
+<div class='card'>
+  <h3>Top 5 Resellers (Clients)</h3>
+  <table><tr><th>User</th><th>Clients</th><th>Revenue</th></tr>
+  {% for r in top_clients %}<tr><td>{{r['username'] or r['tg_id']}}</td><td>{{r['clients']}}</td><td>{{r['revenue']}}</td></tr>{% endfor %}
+  </table>
+</div>
+<div class='card'>
+  <h3>Daily Sales (last 14 days)</h3>
+  <table><tr><th>Date</th><th>Revenue</th></tr>
+  {% for d in daily %}<tr><td>{{d['day']}}</td><td>{{d['revenue']}}</td></tr>{% endfor %}
+  </table>
+</div>
+<div class='card'>
+  <h3>Monthly Sales (last 6 months)</h3>
+  <table><tr><th>Month</th><th>Revenue</th></tr>
+  {% for m in monthly %}<tr><td>{{m['month']}}</td><td>{{m['revenue']}}</td></tr>{% endfor %}
+  </table>
+</div>
