@@ -1,8 +1,6 @@
 import json
 import logging
 import os
-from pathlib import Path
-import re
 import secrets
 import string
 import time
@@ -11,59 +9,53 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
+from bot.config import load_config
+from bot.constants import (
+    BROADCAST_CHOOSE_TARGET,
+    BROADCAST_PREVIEW_CONFIRM,
+    BROADCAST_SEND_MESSAGE,
+    CANCEL_OPTIONS,
+    DEFAULT_ADMIN_TELEGRAM_ID,
+    DEFAULT_FLOW,
+    DEFAULT_LIMIT_IP,
+    DEFAULT_MAX_BULK_COUNT,
+    DEFAULT_MAX_PLAN_DAYS,
+    DEFAULT_MAX_PLAN_GB,
+    DEFAULT_WEBHOOK_LISTEN,
+    DEFAULT_WEBHOOK_PATH,
+    DEFAULT_WEBHOOK_PORT,
+    LIST_PAGE_SIZE,
+    MAX_LIMIT_IP,
+    MAX_LINKS_PER_MESSAGE,
+    REMARK_PATTERN,
+    SUB_ID_ALPHABET,
+    UNLIMITED_DEFAULT_LIMIT_IP,
+    WIZARD_RATE_LIMIT,
+    WIZARD_RATE_WINDOW,
+    WIZARD_STARTS,
+)
+from bot import ui
+from core import orders as core_orders
+from core import pricing as core_pricing
+from core import wallet as core_wallet
 import db
-import xui_api
 from xui_api import XUIApi, build_client_payload, subscription_link, vless_link
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").rstrip("/")
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram").lstrip("/")
-WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
-WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "")
-LOW_BALANCE_THRESHOLD_ENV = os.getenv("LOW_BALANCE_THRESHOLD")
+BOT_TOKEN = ""
+ADMIN_TELEGRAM_ID = DEFAULT_ADMIN_TELEGRAM_ID
+WEBHOOK_BASE_URL = ""
+WEBHOOK_PATH = DEFAULT_WEBHOOK_PATH
+WEBHOOK_LISTEN = DEFAULT_WEBHOOK_LISTEN
+WEBHOOK_PORT = DEFAULT_WEBHOOK_PORT
+WEBHOOK_SECRET_TOKEN = ""
+LOW_BALANCE_THRESHOLD_ENV = None
 LOW_BALANCE_THRESHOLD = 0.0
-MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
-MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
-MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
-MAX_LIMIT_IP = 5
-DEFAULT_FLOW = "xtls-rprx-vision"
-DEFAULT_LIMIT_IP = 2
-UNLIMITED_DEFAULT_LIMIT_IP = 1
-MAX_LINKS_PER_MESSAGE = 10
-LIST_PAGE_SIZE = 10
-CANCEL_OPTIONS = {"cancel", "لغو"}
-REMARK_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-SUB_ID_ALPHABET = string.ascii_lowercase + string.digits
-WIZARD_RATE_LIMIT = 5
-WIZARD_RATE_WINDOW = 600
-WIZARD_STARTS: Dict[int, List[float]] = {}
-BROADCAST_CHOOSE_TARGET = 1
-BROADCAST_SEND_MESSAGE = 2
-BROADCAST_PREVIEW_CONFIRM = 3
-ENV_FILE = Path(__file__).with_name(".env")
-SETUP_PROMPT_FIELDS = [
-    ("TELEGRAM_BOT_TOKEN", "Telegram bot token", "", "required"),
-    ("ADMIN_TELEGRAM_ID", "Admin Telegram ID", "8477244366", "recommended"),
-    ("XUI_BASE_URL", "x-ui panel URL", "", "required"),
-    ("XUI_USERNAME", "x-ui username", "", "required"),
-    ("XUI_PASSWORD", "x-ui password", "", "required"),
-    ("XUI_SERVER_HOST", "x-ui server host/IP", "", "required"),
-    ("XUI_SUBSCRIPTION_PORT", "x-ui subscription port", "2096", "recommended"),
-    ("WEBHOOK_BASE_URL", "Webhook base URL", "", "required"),
-    ("WEBHOOK_PATH", "Webhook path", "telegram", "recommended"),
-    ("WEBHOOK_LISTEN", "Webhook listen address", "0.0.0.0", "recommended"),
-    ("WEBHOOK_PORT", "Webhook port", "8443", "recommended"),
-    ("WEBHOOK_SECRET_TOKEN", "Webhook secret token", "", "optional"),
-    ("MAX_PLAN_DAYS", "Maximum plan days", "365", "recommended"),
-    ("MAX_PLAN_GB", "Maximum plan GB", "2000", "recommended"),
-    ("MAX_BULK_COUNT", "Maximum bulk client count", "100", "recommended"),
-    ("BOT_DB_PATH", "SQLite DB path", "bot.db", "recommended"),
-]
+MAX_DAYS = DEFAULT_MAX_PLAN_DAYS
+MAX_GB = DEFAULT_MAX_PLAN_GB
+MAX_BULK_COUNT = DEFAULT_MAX_BULK_COUNT
 
 
 BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "logs/bot.log")
@@ -134,7 +126,7 @@ def reset_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([["لغو"]], resize_keyboard=True)
+    return ui.kb_cancel()
 
 
 def is_cancel(text: str) -> bool:
@@ -175,164 +167,44 @@ def can_start_wizard(user_id: int) -> bool:
 
 
 def preview_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("✅ تایید", callback_data="wizard:confirm"),
-                InlineKeyboardButton("✏️ ویرایش", callback_data="wizard:edit"),
-            ],
-            [InlineKeyboardButton("لغو", callback_data="wizard:cancel")],
-        ]
-    )
+    return ui.kb_preview()
 
 
 def low_balance_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("شارژ کیف پول", callback_data="menu:wallet")],
-            [InlineKeyboardButton("ثبت درخواست شارژ", callback_data="menu:topup")],
-            [InlineKeyboardButton("پشتیبانی", callback_data="menu:support")],
-            [InlineKeyboardButton("ادامه", callback_data="menu:home")],
-        ]
-    )
+    return ui.kb_low_balance()
 
 
 def broadcast_target_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("همه کاربران", callback_data="broadcast:target:all"),
-                InlineKeyboardButton("فقط نمایندگان", callback_data="broadcast:target:agents"),
-            ]
-        ]
-    )
+    return ui.kb_broadcast_target()
 
 
 def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("✅ تایید", callback_data="broadcast:confirm"),
-                InlineKeyboardButton("✏️ ویرایش", callback_data="broadcast:edit"),
-            ],
-            [InlineKeyboardButton("❌ لغو", callback_data="broadcast:cancel")],
-        ]
-    )
+    return ui.kb_broadcast_confirm()
 
 
 def client_actions_keyboard(rows: List[Dict], total_items: int, page: int) -> InlineKeyboardMarkup:
-    buttons: List[List[InlineKeyboardButton]] = []
-    for c in rows:
-        cid = c["id"]
-        buttons.append(
-            [
-                InlineKeyboardButton("نمایش کانفیگ", callback_data=f"client_action:{cid}:config"),
-                InlineKeyboardButton("QR کد", callback_data=f"client_action:{cid}:qr"),
-            ]
-        )
-        buttons.append(
-            [
-                InlineKeyboardButton("جزئیات", callback_data=f"client_action:{cid}:details"),
-                InlineKeyboardButton("تمدید خودکار", callback_data=f"client_action:{cid}:renew"),
-            ]
-        )
-    if total_items > LIST_PAGE_SIZE:
-        buttons.extend(build_pagination(total_items, page, LIST_PAGE_SIZE, "page:clients").inline_keyboard)
-    return InlineKeyboardMarkup(buttons)
+    return ui.kb_client_actions(rows, total_items, page)
 
 
-def required_missing() -> str:
-    required = [
-        "TELEGRAM_BOT_TOKEN",
-        "XUI_BASE_URL",
-        "XUI_USERNAME",
-        "XUI_PASSWORD",
-        "XUI_SERVER_HOST",
-        "WEBHOOK_BASE_URL",
-    ]
-    missing = [k for k in required if not os.getenv(k)]
-    return ", ".join(missing)
-
-
-def load_env_file() -> None:
-    if not ENV_FILE.exists():
-        return
-    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        raw = line.strip()
-        if not raw or raw.startswith("#") or "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        key = key.strip()
-        if key and key not in os.environ:
-            os.environ[key] = value.strip()
-
-
-def save_env_file(values: Dict[str, str]) -> None:
-    existing: Dict[str, str] = {}
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            raw = line.strip()
-            if not raw or raw.startswith("#") or "=" not in raw:
-                continue
-            key, value = raw.split("=", 1)
-            existing[key.strip()] = value.strip()
-    existing.update(values)
-    lines = [f"{key}={value}" for key, value in sorted(existing.items())]
-    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def interactive_setup_if_needed() -> None:
-    missing = required_missing()
-    if not missing or not os.isatty(0):
-        return
-
-    print("\nFirst-time setup: answer the prompts or press Enter to accept defaults.")
-    print("Values will be saved to .env so you don't need to export them manually.\n")
-    collected: Dict[str, str] = {}
-    for key, label, default, level in SETUP_PROMPT_FIELDS:
-        current = os.getenv(key, "")
-        shown_default = current or default
-        suffix = f" [{level}]"
-        if shown_default:
-            answer = input(f"{label} ({key}){suffix} [default: {shown_default}]: ").strip()
-            value = answer or shown_default
-        else:
-            answer = input(f"{label} ({key}){suffix} [default: empty]: ").strip()
-            value = answer
-        os.environ[key] = value
-        collected[key] = value
-
-    save_env_file(collected)
-    print("\nSaved setup values to .env\n")
-
-
-def apply_runtime_config() -> None:
+def apply_runtime_config(cfg: Dict[str, object]) -> None:
     global BOT_TOKEN, ADMIN_TELEGRAM_ID, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_LISTEN
     global WEBHOOK_PORT, WEBHOOK_SECRET_TOKEN, LOW_BALANCE_THRESHOLD_ENV, MAX_DAYS, MAX_GB, MAX_BULK_COUNT
 
-    BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "8477244366"))
-    WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").rstrip("/")
-    WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram").lstrip("/")
-    WEBHOOK_LISTEN = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
-    WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
-    WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "")
-    LOW_BALANCE_THRESHOLD_ENV = os.getenv("LOW_BALANCE_THRESHOLD")
-    MAX_DAYS = int(os.getenv("MAX_PLAN_DAYS", "365"))
-    MAX_GB = int(os.getenv("MAX_PLAN_GB", "2000"))
-    MAX_BULK_COUNT = int(os.getenv("MAX_BULK_COUNT", "100"))
-
-    xui_api.BASE_URL = os.getenv("XUI_BASE_URL", "")
-    xui_api.USERNAME = os.getenv("XUI_USERNAME", "")
-    xui_api.PASSWORD = os.getenv("XUI_PASSWORD", "")
-    xui_api.SERVER_HOST = os.getenv("XUI_SERVER_HOST", "")
-    xui_api.SUBSCRIPTION_PORT = int(os.getenv("XUI_SUBSCRIPTION_PORT", "2096"))
+    BOT_TOKEN = str(cfg["BOT_TOKEN"])
+    ADMIN_TELEGRAM_ID = int(cfg["ADMIN_TELEGRAM_ID"])
+    WEBHOOK_BASE_URL = str(cfg["WEBHOOK_BASE_URL"])
+    WEBHOOK_PATH = str(cfg["WEBHOOK_PATH"])
+    WEBHOOK_LISTEN = str(cfg["WEBHOOK_LISTEN"])
+    WEBHOOK_PORT = int(cfg["WEBHOOK_PORT"])
+    WEBHOOK_SECRET_TOKEN = str(cfg["WEBHOOK_SECRET_TOKEN"])
+    LOW_BALANCE_THRESHOLD_ENV = cfg["LOW_BALANCE_THRESHOLD_ENV"]
+    MAX_DAYS = int(cfg["MAX_DAYS"])
+    MAX_GB = int(cfg["MAX_GB"])
+    MAX_BULK_COUNT = int(cfg["MAX_BULK_COUNT"])
 
 
 def load_low_balance_threshold() -> float:
-    if LOW_BALANCE_THRESHOLD_ENV is not None:
-        return float(LOW_BALANCE_THRESHOLD_ENV)
-    return float(db.get_setting_float("low_balance_threshold"))
+    return core_wallet.load_low_balance_threshold(LOW_BALANCE_THRESHOLD_ENV, db)
 
 
 def manual_payment_text() -> str:
@@ -359,50 +231,15 @@ def expiry_value(days: int, start_after_first_use: bool) -> int:
 
 
 def main_menu(role: str) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("📊 داشبورد", callback_data="menu:dashboard")],
-        [InlineKeyboardButton("👤 کلاینت‌های من", callback_data="menu:my_clients")],
-        [InlineKeyboardButton("➕ ساخت کلاینت", callback_data="menu:create_client")],
-        [InlineKeyboardButton("🌐 لیست اینباندها", callback_data="menu:inbounds")],
-        [InlineKeyboardButton("📦 پلن‌های پیشنهادی", callback_data="menu:suggested_plans")],
-        [InlineKeyboardButton("💰 کیف پول / موجودی", callback_data="menu:wallet")],
-        [InlineKeyboardButton("📄 تاریخچه تراکنش", callback_data="menu:tx")],
-        [InlineKeyboardButton("🆘 پشتیبانی", callback_data="menu:support")],
-    ]
-    if role in {"reseller", "agent"}:
-        rows.append([InlineKeyboardButton("🎁 معرفی دوستان", callback_data="menu:referral")])
-    rows.append([InlineKeyboardButton("⚙️ تنظیمات", callback_data="menu:settings")])
-    return InlineKeyboardMarkup(rows)
+    return ui.kb_main_menu(role)
 
 
 def create_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("🛒 کلاینت تکی", callback_data="create:single")],
-            [InlineKeyboardButton("📦 ساخت گروهی", callback_data="create:bulk")],
-            [InlineKeyboardButton("🧩 کلاینت چند اینباند", callback_data="create:multi")],
-            [InlineKeyboardButton("⬅️ بازگشت", callback_data="menu:home")],
-        ]
-    )
+    return ui.kb_create_menu()
 
 
 def settings_menu(admin: bool) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("📍 تنظیم اینباند پیش‌فرض", callback_data="settings:set_default_inbound")],
-        [InlineKeyboardButton("🎟 اعمال کد تخفیف", callback_data="settings:promo")],
-    ]
-    if admin:
-        rows.extend(
-            [
-                [InlineKeyboardButton("🛠 ادمین: ساخت اینباند", callback_data="admin:create_inbound")],
-                [InlineKeyboardButton("💵 ادمین: قیمت‌گذاری سراسری", callback_data="admin:set_global_price")],
-                [InlineKeyboardButton("🌐 ادمین: قانون اینباند", callback_data="admin:set_inbound_rule")],
-                [InlineKeyboardButton("👥 ادمین: نمایندگان", callback_data="admin:resellers")],
-                [InlineKeyboardButton("💳 ادمین: شارژ کیف پول", callback_data="admin:charge_wallet")],
-            ]
-        )
-    rows.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="menu:home")])
-    return InlineKeyboardMarkup(rows)
+    return ui.kb_settings_menu(admin)
 
 
 async def send_links(update: Update, links: List[str]) -> None:
@@ -412,31 +249,7 @@ async def send_links(update: Update, links: List[str]) -> None:
 
 
 def build_pagination(total_items: int, current_page: int, items_per_page: int, callback_prefix: str) -> InlineKeyboardMarkup:
-    total_pages = max((total_items - 1) // items_per_page + 1, 1)
-    page = max(1, min(current_page, total_pages))
-    buttons = []
-
-    if page > 1:
-        buttons.append(InlineKeyboardButton("«", callback_data=f"{callback_prefix}:1"))
-        buttons.append(InlineKeyboardButton("‹", callback_data=f"{callback_prefix}:{page - 1}"))
-    else:
-        buttons.append(InlineKeyboardButton("«", callback_data=f"{callback_prefix}:1"))
-        buttons.append(InlineKeyboardButton("‹", callback_data=f"{callback_prefix}:1"))
-
-    start = max(1, page - 1)
-    end = min(total_pages, page + 1)
-    for p in range(start, end + 1):
-        label = f"- {p} -" if p == page else str(p)
-        buttons.append(InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{p}"))
-
-    if page < total_pages:
-        buttons.append(InlineKeyboardButton("›", callback_data=f"{callback_prefix}:{page + 1}"))
-        buttons.append(InlineKeyboardButton("»", callback_data=f"{callback_prefix}:{total_pages}"))
-    else:
-        buttons.append(InlineKeyboardButton("›", callback_data=f"{callback_prefix}:{total_pages}"))
-        buttons.append(InlineKeyboardButton("»", callback_data=f"{callback_prefix}:{total_pages}"))
-
-    return InlineKeyboardMarkup([buttons])
+    return ui.kb_pagination(total_items, current_page, items_per_page, callback_prefix)
 
 
 def page_bounds(total_items: int, page: int, per_page: int) -> tuple[int, int, int]:
@@ -447,68 +260,27 @@ def page_bounds(total_items: int, page: int, per_page: int) -> tuple[int, int, i
 
 
 def inbound_price(tg_id: int, inbound_id: int, days: int, gb: int, limit_ip: Optional[int] = None) -> float:
-    rule = db.inbound_rule(inbound_id)
-    if rule and int(rule["enabled"]) == 0:
-        raise ValueError("Selected inbound is disabled by admin")
-    if gb == 0:
-        limit = limit_ip if limit_ip in {1, 2, 3} else UNLIMITED_DEFAULT_LIMIT_IP
-        return float(db.get_setting_float(f"price_unlimited_ip{limit}"))
-    ppgb_default = db.get_setting_float("price_per_gb")
-    ppday_default = db.get_setting_float("price_per_day")
-    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else ppgb_default
-    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else ppday_default
-    ppgb_eff = db.get_effective_price_per_gb(tg_id, ppgb)
-    ppday_eff = db.get_effective_price_per_day(tg_id, ppday)
-    return round(gb * ppgb_eff + days * ppday_eff, 2)
+    return core_pricing.compute_agent_price(tg_id, inbound_id, days, gb, db, limit_ip, UNLIMITED_DEFAULT_LIMIT_IP)
 
 
 def inbound_pricing_text(inbound_id: int) -> str:
-    rule = db.inbound_rule(inbound_id)
-    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else db.get_setting_float("price_per_gb")
-    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else db.get_setting_float("price_per_day")
-    return f"{ppgb} برای هر GB + {ppday} برای هر روز"
+    return core_pricing.inbound_pricing_text(inbound_id, db)
 
 
 def inbound_pricing_text_list(inbound_ids: List[int]) -> str:
-    return " | ".join(f"{inbound_id}: {inbound_pricing_text(inbound_id)}" for inbound_id in inbound_ids)
+    return core_pricing.inbound_pricing_text_list(inbound_ids, db)
 
 
 def order_count(w: Dict) -> int:
-    if w["kind"] == "bulk":
-        return int(w["count"])
-    if w["kind"] == "multi":
-        return len(w.get("inbound_ids") or [])
-    return 1
+    return core_pricing.order_count(w)
 
 
 def order_total_price(w: Dict) -> float:
-    tg_id = int(w.get("tg_id", 0))
-    count = order_count(w)
-    if w["kind"] == "multi":
-        total = sum(inbound_price(tg_id, i, w["days"], w["gb"], w.get("limit_ip")) for i in (w.get("inbound_ids") or []))
-        return round(total, 2)
-    unit = inbound_price(tg_id, w["inbound_id"], w["days"], w["gb"], w.get("limit_ip"))
-    return round(unit * count, 2)
+    return core_pricing.calculate_price(w, db, UNLIMITED_DEFAULT_LIMIT_IP)
 
 
 def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
-    inbound_ids = w.get("inbound_ids")
-    count = len(inbound_ids) if inbound_ids else w.get("count", 1)
-    total_gb = w["gb"] * count
-    inbound_label = ", ".join(str(i) for i in inbound_ids) if inbound_ids else str(w["inbound_id"])
-    pricing_text = inbound_pricing_text_list(inbound_ids) if inbound_ids else inbound_pricing_text(w["inbound_id"])
-    return (
-        "🧾 <b>پیش‌نمایش سفارش</b>\n"
-        f"تعداد کلاینت: <b>{count}</b>\n"
-        f"مدت: <b>{w['days']} روز</b>\n"
-        f"حجم کل: <b>{total_gb} گیگ</b>\n"
-        f"هزینه کل: <b>{toman(net)}</b> (قیمت: {pricing_text})\n"
-        f"اینباند: <b>{inbound_label}</b>\n"
-        f"نام/پیشوند: <b>{w.get('remark') or w.get('base_remark')}</b>\n"
-        f"شروع بعد از اولین استفاده: <b>{'بله' if w['start_after_first_use'] else 'خیر'}</b>\n"
-        f"تمدید خودکار: <b>{'بله' if w['auto_renew'] else 'خیر'}</b>\n"
-        f"تخفیف: <b>{discount}%</b> | مبلغ ناخالص: <b>{toman(gross)}</b>"
-    )
+    return core_orders.build_order_summary(w, gross, discount, net, inbound_pricing_text, inbound_pricing_text_list, toman)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -650,7 +422,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg.append("برای شارژ روی «ثبت درخواست شارژ» بزنید.")
         await q.message.reply_text(
             "\n".join(msg),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ثبت درخواست شارژ", callback_data="menu:topup")]]),
+            reply_markup=ui.kb_topup_request(),
         )
         return
 
@@ -1169,7 +941,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if flow == "wizard_days":
         d = parse_positive_int(txt)
-        if not d or d > MAX_DAYS:
+        if not d or not core_pricing.validate_duration(d, MAX_DAYS):
             await update.message.reply_text(
                 f"روز نامعتبر است. عددی بین 1 تا {MAX_DAYS} وارد کنید.",
                 reply_markup=cancel_keyboard(),
@@ -1186,7 +958,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             g = 0
         else:
             g = parse_positive_int(txt)
-        if g is None or g < 0 or g > MAX_GB:
+        if g is None or not core_pricing.validate_gb(g, MAX_GB):
             await update.message.reply_text(
                 f"حجم نامعتبر است. عددی بین 0 تا {MAX_GB} وارد کنید. (0 = نامحدود)",
                 reply_markup=cancel_keyboard(),
@@ -1240,9 +1012,8 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(str(exc))
             return
 
-        count = order_count(w)
         discount = float(context.user_data.get("promo_discount", 0.0))
-        net = round(gross * (1 - discount / 100), 2)
+        net = core_pricing.apply_discount(gross, discount)
         context.user_data["flow"] = "wizard_preview"
         await update.message.reply_text(
             wizard_summary(w, gross, discount, net),
@@ -1275,13 +1046,19 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: Dict):
     effective_message = update.effective_message
     uid = update.effective_user.id
-    count = order_count(w)
-    gross = order_total_price(w)
-    disc = float(context.user_data.pop("promo_discount", 0.0))
-    net = round(gross * (1 - disc / 100), 2)
-    auto_renew = bool(w.get("auto_renew", False))
-    reset_days = max(w["days"] - 1, 0) if auto_renew else 0
-    inbound_ids = w.get("inbound_ids") or [w["inbound_id"]]
+    draft_state = core_orders.finalize_order(
+        w,
+        float(context.user_data.pop("promo_discount", 0.0)),
+        db,
+        UNLIMITED_DEFAULT_LIMIT_IP,
+    )
+    count = int(draft_state["count"])
+    gross = float(draft_state["gross"])
+    disc = float(draft_state["discount"])
+    net = float(draft_state["net"])
+    auto_renew = bool(draft_state["auto_renew"])
+    reset_days = int(draft_state["reset_days"])
+    inbound_ids = list(draft_state["inbound_ids"])
 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
@@ -1461,7 +1238,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={links[0]}"
         await update.effective_message.reply_photo(qr)
 
-    if bal < LOW_BALANCE_THRESHOLD:
+    wallet_summary = core_wallet.get_wallet_summary(uid, LOW_BALANCE_THRESHOLD, db)
+    if wallet_summary.is_low_balance:
         await update.effective_message.reply_text(
             "⚠️ موجودی شما کم است. برای جلوگیری از اختلال، کیف پول را شارژ کنید.",
             reply_markup=low_balance_keyboard(),
@@ -1482,13 +1260,9 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
         await update.message.reply_text("فرمت: /topup <amount>")
         return
-    try:
-        amt = float(context.args[0])
-    except ValueError:
-        await update.message.reply_text("مبلغ باید عدد باشد")
-        return
-    if amt <= 0:
-        await update.message.reply_text("مبلغ باید بیشتر از صفر باشد")
+    amt, err = core_wallet.validate_topup_request(context.args[0])
+    if err:
+        await update.message.reply_text(err)
         return
     req_id = db.create_topup_request(update.effective_user.id, amt)
     context.user_data["flow"] = "topup_receipt"
@@ -1514,7 +1288,7 @@ async def approve_topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("شناسه نامعتبر است")
         return
     try:
-        bal = db.approve_topup_request(req_id, update.effective_user.id)
+        bal = core_wallet.apply_topup(req_id, update.effective_user.id, db)
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return
@@ -1543,7 +1317,7 @@ async def use_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("شناسه پلن نامعتبر است")
         return
     plans = db.list_plan_templates(get_user_role(update.effective_user.id))
-    plan = next((p for p in plans if int(p["id"]) == pid), None)
+    plan = core_orders.validate_plan_selection(pid, plans)
     if not plan:
         await update.message.reply_text("پلن پیدا نشد")
         return
@@ -1712,12 +1486,10 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def main() -> None:
-    load_env_file()
-    apply_runtime_config()
-    interactive_setup_if_needed()
-    apply_runtime_config()
+    cfg = load_config()
+    apply_runtime_config(cfg)
     db.init_db()
-    missing = required_missing()
+    missing = str(cfg["missing"])
     if missing:
         raise RuntimeError(f"Missing env vars: {missing}")
     global LOW_BALANCE_THRESHOLD
