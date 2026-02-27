@@ -38,6 +38,9 @@ from bot.constants import (
     WIZARD_STARTS,
 )
 from bot import ui
+from core import orders as core_orders
+from core import pricing as core_pricing
+from core import wallet as core_wallet
 import db
 from xui_api import XUIApi, build_client_payload, subscription_link, vless_link
 
@@ -201,9 +204,7 @@ def apply_runtime_config(cfg: Dict[str, object]) -> None:
 
 
 def load_low_balance_threshold() -> float:
-    if LOW_BALANCE_THRESHOLD_ENV is not None:
-        return float(LOW_BALANCE_THRESHOLD_ENV)
-    return float(db.get_setting_float("low_balance_threshold"))
+    return core_wallet.load_low_balance_threshold(LOW_BALANCE_THRESHOLD_ENV, db)
 
 
 def manual_payment_text() -> str:
@@ -259,68 +260,27 @@ def page_bounds(total_items: int, page: int, per_page: int) -> tuple[int, int, i
 
 
 def inbound_price(tg_id: int, inbound_id: int, days: int, gb: int, limit_ip: Optional[int] = None) -> float:
-    rule = db.inbound_rule(inbound_id)
-    if rule and int(rule["enabled"]) == 0:
-        raise ValueError("Selected inbound is disabled by admin")
-    if gb == 0:
-        limit = limit_ip if limit_ip in {1, 2, 3} else UNLIMITED_DEFAULT_LIMIT_IP
-        return float(db.get_setting_float(f"price_unlimited_ip{limit}"))
-    ppgb_default = db.get_setting_float("price_per_gb")
-    ppday_default = db.get_setting_float("price_per_day")
-    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else ppgb_default
-    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else ppday_default
-    ppgb_eff = db.get_effective_price_per_gb(tg_id, ppgb)
-    ppday_eff = db.get_effective_price_per_day(tg_id, ppday)
-    return round(gb * ppgb_eff + days * ppday_eff, 2)
+    return core_pricing.compute_agent_price(tg_id, inbound_id, days, gb, db, limit_ip, UNLIMITED_DEFAULT_LIMIT_IP)
 
 
 def inbound_pricing_text(inbound_id: int) -> str:
-    rule = db.inbound_rule(inbound_id)
-    ppgb = float(rule["price_per_gb"]) if rule and rule["price_per_gb"] is not None else db.get_setting_float("price_per_gb")
-    ppday = float(rule["price_per_day"]) if rule and rule["price_per_day"] is not None else db.get_setting_float("price_per_day")
-    return f"{ppgb} برای هر GB + {ppday} برای هر روز"
+    return core_pricing.inbound_pricing_text(inbound_id, db)
 
 
 def inbound_pricing_text_list(inbound_ids: List[int]) -> str:
-    return " | ".join(f"{inbound_id}: {inbound_pricing_text(inbound_id)}" for inbound_id in inbound_ids)
+    return core_pricing.inbound_pricing_text_list(inbound_ids, db)
 
 
 def order_count(w: Dict) -> int:
-    if w["kind"] == "bulk":
-        return int(w["count"])
-    if w["kind"] == "multi":
-        return len(w.get("inbound_ids") or [])
-    return 1
+    return core_pricing.order_count(w)
 
 
 def order_total_price(w: Dict) -> float:
-    tg_id = int(w.get("tg_id", 0))
-    count = order_count(w)
-    if w["kind"] == "multi":
-        total = sum(inbound_price(tg_id, i, w["days"], w["gb"], w.get("limit_ip")) for i in (w.get("inbound_ids") or []))
-        return round(total, 2)
-    unit = inbound_price(tg_id, w["inbound_id"], w["days"], w["gb"], w.get("limit_ip"))
-    return round(unit * count, 2)
+    return core_pricing.calculate_price(w, db, UNLIMITED_DEFAULT_LIMIT_IP)
 
 
 def wizard_summary(w: Dict, gross: float, discount: float, net: float) -> str:
-    inbound_ids = w.get("inbound_ids")
-    count = len(inbound_ids) if inbound_ids else w.get("count", 1)
-    total_gb = w["gb"] * count
-    inbound_label = ", ".join(str(i) for i in inbound_ids) if inbound_ids else str(w["inbound_id"])
-    pricing_text = inbound_pricing_text_list(inbound_ids) if inbound_ids else inbound_pricing_text(w["inbound_id"])
-    return (
-        "🧾 <b>پیش‌نمایش سفارش</b>\n"
-        f"تعداد کلاینت: <b>{count}</b>\n"
-        f"مدت: <b>{w['days']} روز</b>\n"
-        f"حجم کل: <b>{total_gb} گیگ</b>\n"
-        f"هزینه کل: <b>{toman(net)}</b> (قیمت: {pricing_text})\n"
-        f"اینباند: <b>{inbound_label}</b>\n"
-        f"نام/پیشوند: <b>{w.get('remark') or w.get('base_remark')}</b>\n"
-        f"شروع بعد از اولین استفاده: <b>{'بله' if w['start_after_first_use'] else 'خیر'}</b>\n"
-        f"تمدید خودکار: <b>{'بله' if w['auto_renew'] else 'خیر'}</b>\n"
-        f"تخفیف: <b>{discount}%</b> | مبلغ ناخالص: <b>{toman(gross)}</b>"
-    )
+    return core_orders.build_order_summary(w, gross, discount, net, inbound_pricing_text, inbound_pricing_text_list, toman)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -981,7 +941,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if flow == "wizard_days":
         d = parse_positive_int(txt)
-        if not d or d > MAX_DAYS:
+        if not d or not core_pricing.validate_duration(d, MAX_DAYS):
             await update.message.reply_text(
                 f"روز نامعتبر است. عددی بین 1 تا {MAX_DAYS} وارد کنید.",
                 reply_markup=cancel_keyboard(),
@@ -998,7 +958,7 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             g = 0
         else:
             g = parse_positive_int(txt)
-        if g is None or g < 0 or g > MAX_GB:
+        if g is None or not core_pricing.validate_gb(g, MAX_GB):
             await update.message.reply_text(
                 f"حجم نامعتبر است. عددی بین 0 تا {MAX_GB} وارد کنید. (0 = نامحدود)",
                 reply_markup=cancel_keyboard(),
@@ -1052,9 +1012,8 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(str(exc))
             return
 
-        count = order_count(w)
         discount = float(context.user_data.get("promo_discount", 0.0))
-        net = round(gross * (1 - discount / 100), 2)
+        net = core_pricing.apply_discount(gross, discount)
         context.user_data["flow"] = "wizard_preview"
         await update.message.reply_text(
             wizard_summary(w, gross, discount, net),
@@ -1087,13 +1046,19 @@ async def text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: Dict):
     effective_message = update.effective_message
     uid = update.effective_user.id
-    count = order_count(w)
-    gross = order_total_price(w)
-    disc = float(context.user_data.pop("promo_discount", 0.0))
-    net = round(gross * (1 - disc / 100), 2)
-    auto_renew = bool(w.get("auto_renew", False))
-    reset_days = max(w["days"] - 1, 0) if auto_renew else 0
-    inbound_ids = w.get("inbound_ids") or [w["inbound_id"]]
+    draft_state = core_orders.finalize_order(
+        w,
+        float(context.user_data.pop("promo_discount", 0.0)),
+        db,
+        UNLIMITED_DEFAULT_LIMIT_IP,
+    )
+    count = int(draft_state["count"])
+    gross = float(draft_state["gross"])
+    disc = float(draft_state["discount"])
+    net = float(draft_state["net"])
+    auto_renew = bool(draft_state["auto_renew"])
+    reset_days = int(draft_state["reset_days"])
+    inbound_ids = list(draft_state["inbound_ids"])
 
     ag = db.get_agent(uid)
     if not ag or int(ag["is_active"]) != 1:
@@ -1273,7 +1238,8 @@ async def finalize_order(update: Update, context: ContextTypes.DEFAULT_TYPE, w: 
         qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={links[0]}"
         await update.effective_message.reply_photo(qr)
 
-    if bal < LOW_BALANCE_THRESHOLD:
+    wallet_summary = core_wallet.get_wallet_summary(uid, LOW_BALANCE_THRESHOLD, db)
+    if wallet_summary.is_low_balance:
         await update.effective_message.reply_text(
             "⚠️ موجودی شما کم است. برای جلوگیری از اختلال، کیف پول را شارژ کنید.",
             reply_markup=low_balance_keyboard(),
@@ -1294,13 +1260,9 @@ async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
         await update.message.reply_text("فرمت: /topup <amount>")
         return
-    try:
-        amt = float(context.args[0])
-    except ValueError:
-        await update.message.reply_text("مبلغ باید عدد باشد")
-        return
-    if amt <= 0:
-        await update.message.reply_text("مبلغ باید بیشتر از صفر باشد")
+    amt, err = core_wallet.validate_topup_request(context.args[0])
+    if err:
+        await update.message.reply_text(err)
         return
     req_id = db.create_topup_request(update.effective_user.id, amt)
     context.user_data["flow"] = "topup_receipt"
@@ -1326,7 +1288,7 @@ async def approve_topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("شناسه نامعتبر است")
         return
     try:
-        bal = db.approve_topup_request(req_id, update.effective_user.id)
+        bal = core_wallet.apply_topup(req_id, update.effective_user.id, db)
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return
@@ -1355,7 +1317,7 @@ async def use_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("شناسه پلن نامعتبر است")
         return
     plans = db.list_plan_templates(get_user_role(update.effective_user.id))
-    plan = next((p for p in plans if int(p["id"]) == pid), None)
+    plan = core_orders.validate_plan_selection(pid, plans)
     if not plan:
         await update.message.reply_text("پلن پیدا نشد")
         return
