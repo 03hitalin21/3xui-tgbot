@@ -1,0 +1,49 @@
+<!doctype html>
+<title>User Detail</title>
+{{style}}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class='card'>
+      {% for category, message in messages %}
+        <div class='flash {{category}}'>{{message}}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+<h1>User Detail</h1>
+<div class='card'>
+  <a href='/admin/users?token={{token}}'>Back</a>
+</div>
+<div class='card'>
+  <h3>{{user['username'] or 'Unknown'}} ({{user['tg_id']}})</h3>
+  <div>Role: <b>{{user['role']}}</b></div>
+  <div>Balance: <b>{{'%.2f'|format(user['balance'])}}</b></div>
+  <div>Joined: <b>{{user['created_at']}}</b></div>
+  <div>Clients: <b>{{user['client_count']}}</b></div>
+</div>
+<div class='card'>
+  <h3>Manual Balance Adjust</h3>
+  <form method='post' action='/admin/user/{{user["tg_id"]}}/adjust'>
+    <input type='hidden' name='token' value='{{token}}'>
+    Amount (positive add / negative deduct):
+    <input name='amount' placeholder='e.g. 10 or -5'>
+    Reason:
+    <input name='reason' placeholder='Required'>
+    <button>Submit</button>
+  </form>
+</div>
+<div class='card'>
+  <h3>Recent Transactions</h3>
+  <table>
+    <tr><th>ID</th><th>Amount</th><th>Type</th><th>Description</th><th>Created</th></tr>
+    {% for t in transactions %}
+      <tr>
+        <td>{{t['id']}}</td>
+        <td>{{t['amount']}}</td>
+        <td>{{t['reason']}}</td>
+        <td>{{t['meta']}}</td>
+        <td>{{t['created_at']}}</td>
+      </tr>
+    {% endfor %}
+  </table>
+</div>

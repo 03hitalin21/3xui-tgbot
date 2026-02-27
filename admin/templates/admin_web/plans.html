@@ -1,0 +1,9 @@
+<!doctype html><title>Plans</title>{{style}}
+<h1>Suggested Plans</h1><div class='card'><a href='/?token={{token}}'>Back</a></div>
+<div class='card'><form method='post' action='/admin/plans'>
+<input type='hidden' name='token' value='{{token}}'>
+Title<input name='title'> Days<input name='days'> GB (0=unlimited)<input name='gb'> limitIp<input name='limit_ip' value='1'>
+<button>Create</button></form></div>
+<table><tr><th>ID</th><th>Title</th><th>Days</th><th>GB</th><th>limitIp</th></tr>
+{% for p in rows %}<tr><td>{{p['id']}}</td><td>{{p['title']}}</td><td>{{p['days']}}</td><td>{{p['gb']}}</td><td>{{p['limit_ip']}}</td></tr>{% endfor %}
+</table>
