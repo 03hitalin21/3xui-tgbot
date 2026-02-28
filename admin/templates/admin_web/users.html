@@ -1,0 +1,58 @@
+<!doctype html>
+<title>Users/Agents</title>
+{{style}}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class='card'>
+      {% for category, message in messages %}
+        <div class='flash {{category}}'>{{message}}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+<h1>User/Agent Search</h1>
+<div class='card'>
+  <a href='/dashboard?token={{token}}'>Back</a> |
+  <a href='/admin/export/agents.csv?token={{token}}'>Export Agents CSV</a>
+</div>
+<div class='card'>
+  <form method='get' action='/admin/users'>
+    <input type='hidden' name='token' value='{{token}}'>
+    Search by username, telegram ID, or role:
+    <input name='search' value='{{search}}' placeholder='e.g. reseller or 12345 or @name'>
+    <button>Search</button>
+  </form>
+</div>
+<div class='card'>
+  <table>
+    <tr>
+      <th>Username</th>
+      <th>Telegram ID</th>
+      <th>Role</th>
+      <th>Balance</th>
+      <th>Join Date</th>
+      <th>Clients</th>
+      <th>Action</th>
+      <th>Pricing</th>
+    </tr>
+    {% for u in users %}
+      <tr>
+        <td>{{u['username'] or '-'}}</td>
+        <td>{{u['tg_id']}}</td>
+        <td>{{u['role']}}</td>
+        <td>{{'%.2f'|format(u['balance'])}}</td>
+        <td>{{u['created_at']}}</td>
+        <td>{{u['client_count']}}</td>
+        <td><a href='/admin/user/{{u["tg_id"]}}?token={{token}}'>View</a></td>
+        <td>
+          <form method='post' action='/admin/user/{{u["tg_id"]}}/pricing'>
+            <input type='hidden' name='token' value='{{token}}'>
+            <input name='price_per_gb' placeholder='custom p/gb'>
+            <input name='price_per_day' placeholder='custom p/day'>
+            <button>Save</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</div>

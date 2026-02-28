@@ -1,0 +1,9 @@
+<!doctype html><title>Topups</title>{{style}}
+<h1>Pending Topups</h1>
+<div class='card'><a href='/?token={{token}}'>Back</a></div>
+<table><tr><th>ID</th><th>User</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Action</th></tr>
+{% for t in rows %}<tr>
+<td>{{t['id']}}</td><td>{{t['tg_id']}} ({{t['username'] or '-'}})</td><td>{{t['amount']}}</td>
+<td>{{'yes' if t['receipt_file_id'] else 'no'}}</td><td>{{t['status']}}</td>
+<td>{% if t['status']=='pending' %}<a href='/admin/topups/{{t["id"]}}/confirm?token={{token}}'>Confirm</a>{% endif %}</td>
+</tr>{% endfor %}</table>
