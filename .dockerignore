@@ -1,0 +1,21 @@
+# VCS
+.git
+.gitignore
+
+# Python caches/venvs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Runtime/state
+.env
+data/
+logs/
+*.db
+
+# Build/docs artifacts
+*.log
+backups/
